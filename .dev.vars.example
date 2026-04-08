@@ -1,0 +1,6 @@
+# Copy to .dev.vars (gitignored) for local `wrangler dev`.
+# In production set these in Cloudflare Dashboard → Workers → Settings → Variables and Secrets.
+
+BOT_TOKEN=
+SUPABASE_SERVICE_ROLE_KEY=
+ADMIN_BOT_TOKEN=
