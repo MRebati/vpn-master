@@ -1,17 +1,19 @@
-import { Bot, Context } from "grammy";
-import { Menu, MenuRange } from "@grammyjs/menu";
+import { Bot, Context, InlineKeyboard } from "grammy";
+import { Menu } from "@grammyjs/menu";
 import { UserService } from "../services/userService";
 import { PaymentService } from "../services/paymentService";
 import { VpnAccountService } from "../services/vpnAccountService";
 import { SettingsService } from "../services/settingsService";
 import { InventoryService } from "../services/inventoryService";
 import { fulfillPaymentAfterApproval } from "../services/fulfillmentService";
-import { MESSAGES, VPN_PLANS, VpnPlanKey, UserStep } from "../constants";
+import { MESSAGES, UserStep } from "../constants";
 import { Env } from "../index";
 import { createClient } from "@supabase/supabase-js";
-import { Database } from "../types";
+import { Database, PublicPaymentMethod, PublicPlan } from "../types";
 import { canActAsStaff } from "../utils/staffAccess";
-import { escapeHtml, PARSE_HTML } from "../utils/telegramHtml";
+import { CatalogService } from "../services/catalogService";
+import { CheckoutService } from "../services/checkoutService";
+import { PaymentRailFactory } from "../services/paymentRails";
 
 // Bot context type with environment
 export type BotContext = Context & { env: Env };
@@ -23,10 +25,21 @@ export class BotManager {
     private vpnAccountService: VpnAccountService;
     private settingsService: SettingsService;
     private inventoryService: InventoryService;
+    private catalogService: CatalogService;
+    private checkoutService: CheckoutService;
+    private railFactory: PaymentRailFactory;
     private plansMenu: Menu<BotContext>;
     private mainMenu: Menu<BotContext>;
     private env: Env;
     private isInitialized = false;
+    private paymentMethodContextByTelegramId = new Map<
+        number,
+        {
+            plan: PublicPlan;
+            methods: PublicPaymentMethod[];
+            createdAt: number;
+        }
+    >();
 
     constructor(env: Env) {
         try {
@@ -79,6 +92,13 @@ export class BotManager {
             this.vpnAccountService = new VpnAccountService(supabase);
             this.settingsService = new SettingsService(supabase);
             this.inventoryService = new InventoryService(supabase);
+            this.catalogService = new CatalogService(supabase);
+            this.railFactory = new PaymentRailFactory();
+            this.checkoutService = new CheckoutService(
+                this.catalogService,
+                this.paymentService,
+                this.railFactory
+            );
             
             // Create and register menus
             console.log(`[BOT_INIT] Creating bot menus`);
@@ -161,6 +181,134 @@ export class BotManager {
             throw error;
         }
     }
+
+    private escapeMdV2(value: string): string {
+        return value.replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&");
+    }
+
+    private formatPlanLine(plan: PublicPlan): string {
+        const price = `${plan.priceToman.toLocaleString()} تومان`;
+        const metric = plan.unit === "days" ? `${plan.metricValue} روز` : `${plan.metricValue} گیگ`;
+        const rating = typeof plan.rating === "number" ? `⭐️ امتیاز: ${plan.rating}\n` : "";
+        return (
+            `📦 ${plan.title}\n` +
+            `📏 ${metric}\n` +
+            `💰 ${price}\n` +
+            rating +
+            `${plan.guidelineText ? `📝 ${plan.guidelineText}\n` : ""}`
+        ).trim();
+    }
+
+    private async showPlanSelection(ctx: BotContext): Promise<void> {
+        const plans = (await this.checkoutService.listPlans()).filter(
+            (p) => p.isCatalogVisible
+        );
+        if (!plans.length) {
+            await ctx.reply("در حال حاضر پلن فعالی برای نمایش وجود ندارد. لطفاً بعداً دوباره تلاش کنید.");
+            return;
+        }
+
+        const keyboard = new InlineKeyboard();
+        plans.forEach((plan, index) => {
+            const rating =
+                plan.rating !== null && plan.rating !== undefined
+                    ? ` ⭐️${plan.rating.toFixed(1)}`
+                    : "";
+            keyboard.text(`${plan.title}${rating}`, `plan:${encodeURIComponent(plan.slug)}`);
+            if (index < plans.length - 1) keyboard.row();
+        });
+
+        const lines = plans.map(
+            (p, idx) =>
+                `${idx + 1}. ${p.title} — ${p.priceToman.toLocaleString()} تومان${
+                    p.rating !== null && p.rating !== undefined
+                        ? ` (⭐️ ${p.rating.toFixed(1)})`
+                        : ""
+                }`
+        );
+        await ctx.reply(
+            "📱 پلن‌های فعال:\n\n" + lines.join("\n") + "\n\nیک پلن را انتخاب کنید:",
+            { reply_markup: keyboard }
+        );
+    }
+
+    private async showPaymentMethodSelection(
+        ctx: BotContext,
+        plan: PublicPlan,
+        methods: PublicPaymentMethod[]
+    ): Promise<void> {
+        const keyboard = new InlineKeyboard();
+        methods.forEach((method, index) => {
+            keyboard.text(method.label, `select_method:${method.id}`);
+            if (index < methods.length - 1) keyboard.row();
+        });
+
+        const planDetails = this.formatPlanLine(plan)
+            .split("\n")
+            .map((line) => this.escapeMdV2(line))
+            .join("\n");
+        await ctx.reply(`✅ *پلن انتخاب شد*\n\n${planDetails}\n\nروش پرداخت را انتخاب کنید:`, {
+            parse_mode: "MarkdownV2",
+            reply_markup: keyboard,
+        });
+    }
+
+    private async handlePlanSelection(ctx: BotContext, slug: string): Promise<void> {
+        const plan = await this.checkoutService.getPlanBySlug(slug);
+        if (!plan || !plan.isCatalogVisible) {
+            await ctx.reply("این پلن در حال حاضر قابل خرید نیست. لطفاً از پلن‌های فعال انتخاب کنید.");
+            return;
+        }
+
+        const user = await this.userService.getOrCreateUser(
+            ctx.from.id,
+            ctx.from.first_name,
+            ctx.from.username
+        );
+        await this.userService.selectPlan(user.id, plan.internalPlanKey, plan.priceToman);
+        await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT_METHOD);
+
+        const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
+        const methods = await this.checkoutService.listPaymentMethodsForPlan(plan, card);
+        this.paymentMethodContextByTelegramId.set(ctx.from.id, {
+            plan,
+            methods,
+            createdAt: Date.now(),
+        });
+
+        await this.showPaymentMethodSelection(ctx, plan, methods);
+    }
+
+    private async showOrderStatus(ctx: BotContext, dbUserId: number): Promise<void> {
+        const latest = await this.paymentService.getLatestOrderStatus(dbUserId);
+        if (!latest) {
+            await ctx.reply("سفارشی برای شما ثبت نشده است.");
+            return;
+        }
+
+        const statusLabel =
+            latest.status === "COMPLETED"
+                ? "تکمیل‌شده"
+                : latest.status === "FAILED"
+                  ? "ناموفق"
+                  : latest.status === "EXPIRED"
+                    ? "منقضی"
+                    : "در انتظار";
+        const reviewLabel =
+            latest.reviewStatus === "approved"
+                ? "تایید شده"
+                : latest.reviewStatus === "rejected"
+                  ? "رد شده"
+                  : "در حال بررسی";
+
+        await ctx.reply(
+            `📦 وضعیت آخرین سفارش\n\n` +
+                `🆔 شماره پرداخت: ${latest.paymentId}\n` +
+                `💳 وضعیت پرداخت: ${statusLabel}\n` +
+                `🧾 وضعیت بررسی: ${reviewLabel}\n` +
+                `⏱ بروزرسانی: ${new Date(latest.updatedAt).toLocaleString("fa-IR")}`
+        );
+    }
     
     /**
      * Create menu objects
@@ -168,96 +316,30 @@ export class BotManager {
     private createMenus() {
         // Plans menu
         const plansMenu = new Menu<BotContext>("plans-menu")
-            .dynamic(() => {
-                const range = new MenuRange<BotContext>();
-                Object.entries(VPN_PLANS).forEach(([key, plan], index) => {
-                    // Add each plan button on a separate row
-                    range.text(plan.name, async (ctx) => {
-                        console.log(`[PLAN_SELECTED] User ${ctx.from.id} selected plan: ${key}`);
-                        
-                        try {
-                            // Get or create user
-                            console.log(`[PLAN_DEBUG] Attempting to get/create user for ${ctx.from.id}`);
-                            const user = await this.userService.getOrCreateUser(
-                                ctx.from.id,
-                                ctx.from.first_name,
-                                ctx.from.username
-                            );
-                            console.log(`[PLAN_DEBUG] User obtained: ${JSON.stringify(user)}`);
-                            
-                            // Update user with selected plan
-                            console.log(`[PLAN_DEBUG] Updating user with plan: ${key}`);
-                            await this.userService.selectPlan(
-                                user.id,
-                                key as VpnPlanKey,
-                                plan.price
-                            );
-                            console.log(`[PLAN_DEBUG] User updated with plan successfully`);
-                            
-                            // Create payment record
-                            console.log(`[PLAN_DEBUG] Creating payment record for user ${user.id}`);
-                            const payment = await this.paymentService.createPayment(
-                                user.id, 
-                                key as VpnPlanKey
-                            );
-                            console.log(`[PAYMENT_CREATED] Created payment ID: ${payment.id}, Transaction ID: ${payment.transaction_id} for user ${user.id}`);
-
-                            await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT);
-
-                            const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
-                            const planKey = key as VpnPlanKey;
-                            const planInfo = VPN_PLANS[planKey];
-                            await ctx.reply(
-                                `📋 پلن انتخابی: ${planInfo.name}\n💲 مبلغ قابل پرداخت: ${payment.amount.toLocaleString()} تومان`,
-                                { parse_mode: PARSE_HTML }
-                            );
-                            const instructions = this.paymentService.getPaymentInstructions(
-                                payment.id,
-                                payment.transaction_id,
-                                payment.amount,
-                                card
-                            );
-                            await ctx.reply(instructions, { parse_mode: PARSE_HTML });
-                        } catch (error) {
-                            console.error(`[ERROR] Error in plan selection handler:`, error);
-                            if (error instanceof Error) {
-                                console.error(`[ERROR_DETAILS] ${error.message}`);
-                                if (error.stack) {
-                                    console.error(`[ERROR_STACK] ${error.stack}`);
-                                }
-                            }
-                            
-                            // Try to provide a more specific error message
-                            let errorMsg = MESSAGES.ERROR;
-                            if (error instanceof Error) {
-                                errorMsg += `\n\nخطا: ${error.message}`;
-                            }
-                            
-                            await ctx.reply(errorMsg);
-                        }
-                    });
-                    // Add a row after each button (except for the last one)
-                    if (index < Object.entries(VPN_PLANS).length - 1) {
-                        range.row();
-                    }
-                });
-                return range;
+            .text("🔄 نمایش پلن‌های فعال", async (ctx) => {
+                await this.showPlanSelection(ctx);
             });
 
         // Main menu
         const mainMenu = new Menu<BotContext>("main-menu")
             .text("🛍 خرید اشتراک", async (ctx) => {
-                await ctx.reply(MESSAGES.SELECT_PLAN, {
-                    reply_markup: plansMenu,
-                    parse_mode: PARSE_HTML,
-                });
+                const user = await this.userService.getOrCreateUser(
+                    ctx.from.id,
+                    ctx.from.first_name,
+                    ctx.from.username
+                );
+                await this.userService.setUserStep(user.id, UserStep.SELECTING_PLAN);
+                await this.showPlanSelection(ctx);
             })
             .row()
             .text("🔄 تمدید اشتراک", async (ctx) => {
-                await ctx.reply(MESSAGES.SELECT_PLAN, {
-                    reply_markup: plansMenu,
-                    parse_mode: PARSE_HTML,
-                });
+                const user = await this.userService.getOrCreateUser(
+                    ctx.from.id,
+                    ctx.from.first_name,
+                    ctx.from.username
+                );
+                await this.userService.setUserStep(user.id, UserStep.SELECTING_PLAN);
+                await this.showPlanSelection(ctx);
             })
             .row()
             .text("📋 اکانت‌های من", async (ctx) => {
@@ -276,6 +358,15 @@ export class BotManager {
                         `${i + 1}. ${a.username} — انقضا: ${new Date(a.expiry_date).toLocaleDateString("fa-IR")}`
                 );
                 await ctx.reply("📋 اکانت‌های شما:\n\n" + lines.join("\n"));
+            })
+            .row()
+            .text("📦 وضعیت سفارش", async (ctx) => {
+                const user = await this.userService.getOrCreateUser(
+                    ctx.from.id,
+                    ctx.from.first_name,
+                    ctx.from.username
+                );
+                await this.showOrderStatus(ctx, user.id);
             })
             .row()
             .text("❓ راهنما", async (ctx) => {
@@ -373,6 +464,20 @@ export class BotManager {
                 );
             } catch (error) {
                 console.error(`[COMMAND_ERROR] Error handling /help command:`, error);
+            }
+        });
+
+        this.bot.command("order_status", async (ctx) => {
+            try {
+                const user = await this.userService.getOrCreateUser(
+                    ctx.from.id,
+                    ctx.from.first_name,
+                    ctx.from.username
+                );
+                await this.showOrderStatus(ctx, user.id);
+            } catch (error) {
+                console.error(`[COMMAND_ERROR] Error handling /order_status command:`, error);
+                await ctx.reply(MESSAGES.ERROR, { parse_mode: "MarkdownV2" });
             }
         });
         
@@ -656,6 +761,52 @@ export class BotManager {
     }
     
     private registerCallbackHandlers() {
+        this.bot.callbackQuery(/^plan:(.+)$/, async (ctx) => {
+            await ctx.answerCallbackQuery();
+            const rawSlug = ctx.match![1];
+            const slug = decodeURIComponent(rawSlug);
+            await this.handlePlanSelection(ctx, slug);
+        });
+
+        this.bot.callbackQuery(/^select_method:(\d+)$/, async (ctx) => {
+            await ctx.answerCallbackQuery();
+            const methodId = Number(ctx.match![1]);
+            const session = this.paymentMethodContextByTelegramId.get(ctx.from.id);
+            if (!session || Date.now() - session.createdAt > 20 * 60_000) {
+                await ctx.reply("جلسه خرید منقضی شده است. لطفاً دوباره /start را بزنید.");
+                return;
+            }
+            const method = session.methods.find((m) => m.id === methodId);
+            if (!method) {
+                await ctx.reply("روش پرداخت انتخابی معتبر نیست.");
+                return;
+            }
+
+            const user = await this.userService.getOrCreateUser(
+                ctx.from.id,
+                ctx.from.first_name,
+                ctx.from.username
+            );
+            const checkout = await this.checkoutService.createPaymentAndInstruction({
+                userId: user.id,
+                telegramUserId: ctx.from.id,
+                plan: session.plan,
+                method,
+            });
+            await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT_PROOF);
+
+            await ctx.reply(
+                `📋 پلن انتخابی: ${session.plan.title}\n💲 مبلغ قابل پرداخت: ${checkout.amount.toLocaleString()} تومان`
+            );
+            const railNote = method.instructions ? `\n\n${method.instructions}` : "";
+            await ctx.reply(`${checkout.instruction.instructionText}${railNote}`, {
+                parse_mode: "MarkdownV2",
+            });
+            if (checkout.instruction.deepLink) {
+                await ctx.reply(`🔗 لینک پرداخت:\n${checkout.instruction.deepLink}`);
+            }
+        });
+
         this.bot.callbackQuery(/^ap:(\d+)$/, async (ctx) => {
             if (!ctx.from || !canActAsStaff(ctx, this.env)) {
                 await ctx.answerCallbackQuery({ text: "مجاز نیستید" });
@@ -668,7 +819,7 @@ export class BotManager {
                 paymentService: this.paymentService,
                 inventoryService: this.inventoryService,
                 vpnAccountService: this.vpnAccountService,
-                productTypeService: this.inventoryService.getProductTypes(),
+                catalogService: this.catalogService,
                 bot: this.bot,
                 paymentId,
                 isTestMode: this.env.TEST_MODE === "true",
@@ -716,7 +867,12 @@ export class BotManager {
                     ctx.from.first_name,
                     ctx.from.username
                 );
-                if (user.step !== UserStep.AWAITING_PAYMENT) return;
+                if (
+                    user.step !== UserStep.AWAITING_PAYMENT &&
+                    user.step !== UserStep.AWAITING_PAYMENT_PROOF
+                ) {
+                    return;
+                }
 
                 const pending = await this.paymentService.getLatestPendingPayment(user.id);
                 if (!pending) return;
@@ -820,26 +976,30 @@ export class BotManager {
                         parse_mode: PARSE_HTML
                     });
                 } else if (user.step === UserStep.SELECTING_PLAN) {
-                    // This should be handled by menu buttons, but just in case
-                    await ctx.reply(MESSAGES.SELECT_PLAN, { 
-                        reply_markup: this.plansMenu,
-                        parse_mode: PARSE_HTML
-                    });
+                    await this.showPlanSelection(ctx);
+                } else if (user.step === UserStep.AWAITING_PAYMENT_METHOD) {
+                    const session = this.paymentMethodContextByTelegramId.get(ctx.from.id);
+                    if (!session || Date.now() - session.createdAt > 20 * 60_000) {
+                        await ctx.reply("برای ادامه خرید دوباره یک پلن انتخاب کنید.");
+                        await this.showPlanSelection(ctx);
+                        return;
+                    }
+                    await this.showPaymentMethodSelection(ctx, session.plan, session.methods);
                 } else if (
                     user.step === UserStep.AWAITING_USERNAME ||
                     user.step === UserStep.AWAITING_PASSWORD
                 ) {
-                    await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT);
+                    await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT_PROOF);
                     const pendingPayment = await this.paymentService.getLatestPendingPayment(user.id);
                     if (!pendingPayment) {
                         await ctx.reply(MESSAGES.ERROR, { parse_mode: PARSE_HTML });
                         return;
                     }
                     const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
-                    const planInfo = VPN_PLANS[pendingPayment.plan];
+                    const planInfo = await this.catalogService.getPlanByInternalPlanKey(pendingPayment.plan);
                     await ctx.reply(
-                        `📋 پلن انتخابی: ${planInfo.name}\n💲 مبلغ قابل پرداخت: ${pendingPayment.amount.toLocaleString()} تومان`,
-                        { parse_mode: PARSE_HTML }
+                        `📋 پلن انتخابی: ${planInfo?.title ?? pendingPayment.plan}\n💲 مبلغ قابل پرداخت: ${pendingPayment.amount.toLocaleString()} تومان`,
+                        { parse_mode: "MarkdownV2" }
                     );
                     await ctx.reply(
                         "⚠️ فرآیند خرید به‌روز شد؛ لطفاً پس از واریز، <b>عکس رسید</b> یا <b>اسکرین‌شات پیامک</b> را ارسال کنید.",
@@ -851,9 +1011,12 @@ export class BotManager {
                         pendingPayment.amount,
                         card
                     );
-                    await ctx.reply(instructions, { parse_mode: PARSE_HTML });
-                } else if (user.step === UserStep.AWAITING_PAYMENT) {
-                    await ctx.reply(MESSAGES.INVALID_CARD_NUMBER, { parse_mode: PARSE_HTML });
+                    await ctx.reply(instructions, { parse_mode: "MarkdownV2" });
+                } else if (
+                    user.step === UserStep.AWAITING_PAYMENT ||
+                    user.step === UserStep.AWAITING_PAYMENT_PROOF
+                ) {
+                    await ctx.reply(MESSAGES.INVALID_CARD_NUMBER, { parse_mode: "MarkdownV2" });
                 } else {
                     console.log(`[USER_STATE] Unhandled user state: ${user.step} for user ${user.id}`);
                     await ctx.reply(MESSAGES.ERROR + "\n\nلطفاً با ارسال /start دوباره شروع کنید.", { parse_mode: PARSE_HTML });

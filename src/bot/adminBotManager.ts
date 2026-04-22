@@ -9,24 +9,8 @@ import { VpnAccountService } from '../services/vpnAccountService';
 import { SettingsService } from '../services/settingsService';
 import { ProductTypeService } from '../services/productTypeService';
 import { deliverInventoryForCompletedPayment } from '../services/fulfillmentService';
-import { VPN_PLANS, VpnPlanKey } from '../constants';
-import {
-    canActAsStaff,
-    canUseStockPaste,
-    isStaffUserId,
-    resolveTelegramChannelChatId,
-} from '../utils/staffAccess';
-import {
-    buildAccessDeniedArticle,
-    buildInlineHelpArticle,
-    buildProductTypeArticles,
-    buildTemplateUserPassArticle,
-    filterProductTypesForInline,
-    normalizeInlineSearch,
-} from './adminInlineQuery';
-import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
-import { parseUserPassBlock } from '../utils/parseStockCredential';
-import { formatAvailableStockCard } from './stockCardMarkup';
+import { CatalogService } from '../services/catalogService';
+import { canActAsStaff } from '../utils/staffAccess';
 
 export type AdminBotContext = Context & { env: Env };
 
@@ -41,7 +25,7 @@ export class AdminBotManager {
     private inventoryService: InventoryService;
     private vpnAccountService: VpnAccountService;
     private settingsService: SettingsService;
-    private productTypeService: ProductTypeService;
+    private catalogService: CatalogService;
     private initialized = false;
 
     constructor(env: Env) {
@@ -68,7 +52,7 @@ export class AdminBotManager {
         this.inventoryService = new InventoryService(supabase);
         this.vpnAccountService = new VpnAccountService(supabase);
         this.settingsService = new SettingsService(supabase);
-        this.productTypeService = new ProductTypeService(supabase);
+        this.catalogService = new CatalogService(supabase);
 
         this.bot.use((ctx, next) => {
             ctx.env = env;
@@ -121,143 +105,14 @@ export class AdminBotManager {
             }
             await ctx.reply(
                 [
-                    '<b>ربات مدیریت VPNMasters</b>',
-                    '',
-                    '<b>انواع و موجودی</b>',
-                    '/types — انتخاب نوع (دکمه شیشه‌ای) برای ورودی بعدی',
-                    '<b>اینلاین:</b> در کانال/گروه بنویسید <code>@نام_ربات_مدیریت</code> + فاصله — لیست نوع‌ها؛ یا «راهنما»، «قالب»',
-                    '/addtype — افزودن نوع (روز یا گیگ)',
-                    '/deltype &lt;id&gt; — غیرفعال کردن نوع',
-                    '/listtypes — لیست با شناسه (برای /deltype)',
-                    '',
-                    '<b>ثبت اکانت</b>',
-                    '۱) /types را بزنید و نوع را انتخاب کنید',
-                    '۲) بلاک زیر را بفرستید:',
-                    '<code>User',
-                    '…',
-                    'Pass',
-                    '…</code>',
-                    '',
-                    '<b>یا</b> دستی:',
-                    '<code>/addstock user pass [slug] [openvpn|v2ray]</code>',
-                    '',
-                    '/stock — آمار موجودی',
-                    '/stocklist — لیست',
-                    '',
-                    '<b>سایر</b>',
-                    '/setcard، /setsupport، /deliver',
-                ].join('\n'),
-                { parse_mode: PARSE_HTML }
-            );
-        });
-
-        this.bot.command(['types', 'picktype'], async (ctx) => {
-            if (!canActAsStaff(ctx, this.env)) return;
-            const types = await this.productTypeService.listActive();
-            if (!types.length) {
-                await ctx.reply('هنوز نوعی تعریف نشده. از /addtype استفاده کنید.', {
-                    parse_mode: PARSE_HTML,
-                });
-                return;
-            }
-            const kb = new InlineKeyboard();
-            types.forEach((t, i) => {
-                const label =
-                    t.label_fa.length > 22 ? t.label_fa.slice(0, 20) + '…' : t.label_fa;
-                kb.text(label, `pt:sel:${t.id}`);
-                if (i % 2 === 1) kb.row();
-            });
-            if (types.length % 2 === 1) kb.row();
-            await ctx.reply(
-                '📌 <b>نوع محصول را برای ورودی بعدی انتخاب کنید</b>\n\n' +
-                    'سپس بلاک را بفرستید:\n' +
-                    '<code>User</code>\n<code>نام‌کاربری</code>\n\n' +
-                    '<code>Pass</code>\n<code>رمز</code>',
-                { reply_markup: kb, parse_mode: PARSE_HTML }
-            );
-        });
-
-        this.bot.callbackQuery(/^pt:sel:(\d+)$/, async (ctx) => {
-            if (!canActAsStaff(ctx, this.env)) {
-                await ctx.answerCallbackQuery({ text: 'مجاز نیستید' });
-                return;
-            }
-            const id = parseInt(ctx.match![1], 10);
-            const pt = await this.productTypeService.getById(id);
-            if (!pt || !pt.is_active) {
-                await ctx.answerCallbackQuery({ text: 'نوع نامعتبر است' });
-                return;
-            }
-            await this.settingsService.setPendingStockProductType(ctx.from!.id, id);
-            await ctx.answerCallbackQuery({ text: `انتخاب: ${pt.label_fa}` });
-            await ctx.reply(
-                `✅ نوع فعال: <b>${escapeHtml(pt.label_fa)}</b> (<code>${escapeHtml(pt.slug)}</code>)\n\n` +
-                    'اکنون بلاک User/Pass را بفرستید.',
-                { parse_mode: PARSE_HTML }
-            );
-        });
-
-        this.bot.command('addtype', async (ctx) => {
-            if (!canActAsStaff(ctx, this.env)) return;
-            const text = ctx.message?.text ?? '';
-            const parts = text.trim().split(/\s+/).slice(1);
-            if (parts.length < 5) {
-                await ctx.reply(
-                    'فرمت:\n<code>/addtype slug نام_با_خط_زیر unit metric قیمت_تومان</code>\n\n' +
-                        'مثال:\n<code>/addtype g50 فیفتی_گیگ gb 50 400000</code>\n' +
-                        '<code>/addtype m30 یک_ماهه_ویژه days 30 150000</code>\n\n' +
-                        'unit: <code>days</code> یا <code>gb</code>',
-                    { parse_mode: PARSE_HTML }
-                );
-                return;
-            }
-            const [slug, labelJoined, unit, metricStr, priceStr] = parts;
-            if (unit !== 'days' && unit !== 'gb') {
-                await ctx.reply('unit باید days یا gb باشد.', { parse_mode: PARSE_HTML });
-                return;
-            }
-            const metric = Number(metricStr);
-            const price = parseInt(priceStr, 10);
-            if (!Number.isFinite(metric) || metric <= 0 || !Number.isFinite(price)) {
-                await ctx.reply('مقدار یا قیمت نامعتبر است.', { parse_mode: PARSE_HTML });
-                return;
-            }
-            const label_fa = labelJoined.replace(/_/g, ' ');
-            try {
-                await this.productTypeService.create({
-                    slug,
-                    label_fa,
-                    unit,
-                    metric_value: metric,
-                    price_toman: price,
-                });
-            } catch (e) {
-                await ctx.reply(
-                    `خطا: ${escapeHtml(e instanceof Error ? e.message : String(e))}`,
-                    { parse_mode: PARSE_HTML }
-                );
-                return;
-            }
-            await ctx.reply(`نوع <code>${escapeHtml(slug)}</code> ثبت شد.`, {
-                parse_mode: PARSE_HTML,
-            });
-        });
-
-        this.bot.command('listtypes', async (ctx) => {
-            if (!canActAsStaff(ctx, this.env)) return;
-            const types = await this.productTypeService.listAll();
-            if (!types.length) {
-                await ctx.reply('نوعی ثبت نشده است.', { parse_mode: PARSE_HTML });
-                return;
-            }
-            const lines = types.map((t) => {
-                const u = t.unit === 'days' ? `${t.metric_value} روز` : `${t.metric_value} GB`;
-                const st = t.is_active ? '✅' : '⛔️';
-                return `${st} <code>${t.id}</code> · <code>${escapeHtml(t.slug)}</code> · ${escapeHtml(t.label_fa)} · ${escapeHtml(u)} · ${t.price_toman ?? '—'} ت`;
-            });
-            await ctx.reply(
-                `📋 <b>همه انواع</b>\n\n${lines.join('\n')}`,
-                { parse_mode: PARSE_HTML }
+                    'Admin bot commands:',
+                    '(Use here or in STAFF_CHANNEL_ID group; DMs need ADMIN/STAFF_USER_IDS.)',
+                    '/setcard <number> — bank card shown to customers',
+                    '/setsupport <text> — support message for customers',
+                    '/addstock <user> <pass> [plan_key] [openvpn|v2ray]',
+                    '/stock — available counts',
+                    '/deliver <telegram_id> <plan_key> — manual sale (uses inventory)',
+                ].join('\n')
             );
         });
 
@@ -311,30 +166,20 @@ export class AdminBotManager {
             const rest = text.replace(/^\/addstock\s*/i, '').trim().split(/\s+/);
             if (rest.length < 2) {
                 await ctx.reply(
-                    'فرمت: <code>/addstock نام_کاربری رمز [slug_نوع] [openvpn|v2ray]</code>\n' +
-                        'slug را از /types ببینید (مثلاً <code>1month</code>، <code>g50</code>)',
-                    { parse_mode: PARSE_HTML }
+                    'Usage: /addstock <username> <password> [plan_key] [openvpn|v2ray]'
                 );
                 return;
             }
             const username = rest[0];
             const password = rest[1];
-            let product_type_id: number | null = null;
-            let plan_key: string | null = null;
+            let plan: string | null = null;
             let format = 'openvpn';
-
-            if (rest.length >= 3) {
-                const third = rest[2];
-                const pt = await this.productTypeService.getActiveBySlug(third);
-                if (pt) {
-                    product_type_id = pt.id;
-                    plan_key = pt.slug;
+            if (rest[2]) {
+                if (rest[2] === 'openvpn' || rest[2] === 'v2ray') {
+                    format = rest[2];
+                } else {
+                    plan = rest[2];
                     if (rest[3] === 'openvpn' || rest[3] === 'v2ray') format = rest[3];
-                } else if (third === '1month' || third === '3months') {
-                    plan_key = third;
-                    if (rest[3] === 'openvpn' || rest[3] === 'v2ray') format = rest[3];
-                } else if (third === 'openvpn' || third === 'v2ray') {
-                    format = third;
                 }
             }
 
@@ -375,46 +220,8 @@ export class AdminBotManager {
 
         this.bot.command('stock', async (ctx) => {
             if (!canActAsStaff(ctx, this.env)) return;
-            const types = await this.productTypeService.listActive();
-            const lines: string[] = [];
-            for (const t of types) {
-                const c = await this.inventoryService.countAvailableForProductTypeId(t.id);
-                const unit =
-                    t.unit === 'days' ? `${t.metric_value} روز` : `${t.metric_value} GB`;
-                lines.push(
-                    `• ${escapeHtml(t.label_fa)} (<code>${escapeHtml(t.slug)}</code>) — ${unit}: <b>${c}</b>`
-                );
-            }
-            const legacyAny = await this.inventoryService.countAvailable();
-            const legacy1 = await this.inventoryService.countAvailable('1month');
-            const legacy3 = await this.inventoryService.countAvailable('3months');
-            await ctx.reply(
-                `📊 <b>موجودی به تفکیک نوع</b>\n\n${lines.join('\n')}\n\n` +
-                    `<i>قدیمی (بدون نوع اختصاصی):</i> کل ${legacyAny} · 1m ${legacy1} · 3m ${legacy3}`,
-                { parse_mode: PARSE_HTML }
-            );
-        });
-
-        this.bot.command('stocklist', async (ctx) => {
-            if (!canActAsStaff(ctx, this.env)) return;
-            const rows = await this.inventoryService.listAvailableRows(25);
-            if (!rows.length) {
-                await ctx.reply('موردی در موجودی نیست.', { parse_mode: PARSE_HTML });
-                return;
-            }
-            const lines: string[] = [];
-            for (let i = 0; i < rows.length; i++) {
-                const r = rows[i];
-                const plan = await this.labelForInventoryRow(r);
-                const fmt = this.formatFormatLabel(r.config_format ?? 'openvpn');
-                lines.push(
-                    `${i + 1}. <code>${escapeHtml(r.username)}</code> — ${escapeHtml(plan)} — ${escapeHtml(fmt)}`
-                );
-            }
-            await ctx.reply(
-                `📋 <b>لیست موجودی</b> (حداکثر ۲۵)\n\n${lines.join('\n')}`,
-                { parse_mode: PARSE_HTML }
-            );
+            const any = await this.inventoryService.countAvailable();
+            await ctx.reply(`Available (any plan match): ${any}`);
         });
 
         this.bot.command('deliver', async (ctx) => {
@@ -422,22 +229,14 @@ export class AdminBotManager {
             const text = ctx.message?.text ?? '';
             const rest = text.replace(/^\/deliver\s*/i, '').trim().split(/\s+/);
             if (rest.length < 2) {
-                await ctx.reply(
-                    'فرمت: <code>/deliver &lt;telegram_user_id&gt; &lt;slug_نوع&gt;</code>\n' +
-                        'مثال: <code>/deliver 123456789 1month</code>',
-                    { parse_mode: PARSE_HTML }
-                );
+                await ctx.reply('Usage: /deliver <telegram_user_id> <plan_key>');
                 return;
             }
             const tgId = Number(rest[0]);
-            const planSlug = rest[1];
-            const pt = await this.productTypeService.getActiveBySlug(planSlug);
-            const legacy = planSlug === '1month' || planSlug === '3months';
-            if (!pt && !legacy) {
-                await ctx.reply(
-                    'نوع نامعتبر. اسلاگ را از /types یا دیتابیس بگیرید.',
-                    { parse_mode: PARSE_HTML }
-                );
+            const plan = rest[1];
+            const planData = await this.catalogService.getPlanByInternalPlanKey(plan);
+            if (!planData) {
+                await ctx.reply('Unknown plan key.');
                 return;
             }
             const user = await this.userService.getOrCreateUser(
@@ -447,7 +246,8 @@ export class AdminBotManager {
             );
             const payment = await this.paymentService.createManualCompletedPayment(
                 user.id,
-                planSlug
+                plan,
+                planData.priceToman
             );
             const isTest = this.env.TEST_MODE === 'true';
             const r = await deliverInventoryForCompletedPayment({
@@ -455,7 +255,7 @@ export class AdminBotManager {
                 paymentService: this.paymentService,
                 inventoryService: this.inventoryService,
                 vpnAccountService: this.vpnAccountService,
-                productTypeService: this.inventoryService.getProductTypes(),
+                catalogService: this.catalogService,
                 bot: new Bot(this.env.BOT_TOKEN),
                 payment,
                 isTestMode: isTest,

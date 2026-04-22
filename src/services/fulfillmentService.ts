@@ -4,8 +4,8 @@ import { UserService } from './userService';
 import { PaymentService } from './paymentService';
 import { InventoryService } from './inventoryService';
 import { VpnAccountService } from './vpnAccountService';
-import { ProductTypeService } from './productTypeService';
-import { UserStep, VPN_PLANS, VpnPlanKey } from '../constants';
+import { CatalogService } from './catalogService';
+import { UserStep } from '../constants';
 import { EXTENDED_MESSAGES } from '../extendedMessages';
 import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
 import { formatSoldStockCard } from '../bot/stockCardMarkup';
@@ -98,7 +98,7 @@ export async function fulfillPaymentAfterApproval(params: {
     paymentService: PaymentService;
     inventoryService: InventoryService;
     vpnAccountService: VpnAccountService;
-    productTypeService: ProductTypeService;
+    catalogService: CatalogService;
     bot: Bot;
     paymentId: number;
     isTestMode: boolean;
@@ -108,7 +108,7 @@ export async function fulfillPaymentAfterApproval(params: {
         paymentService,
         inventoryService,
         vpnAccountService,
-        productTypeService,
+        catalogService,
         userService,
         bot,
         paymentId,
@@ -120,8 +120,8 @@ export async function fulfillPaymentAfterApproval(params: {
     if (!payment) return { ok: false, error: 'payment_not_found' };
     if (payment.status !== 'PENDING') return { ok: false, error: 'not_pending' };
 
-    const planSlug = payment.plan;
-    const inv = await inventoryService.takeNextForPlan(planSlug);
+    const plan = payment.plan;
+    const inv = await inventoryService.takeNextForPlan(plan);
     if (!inv) {
         return { ok: false, error: 'no_inventory' };
     }
@@ -132,11 +132,14 @@ export async function fulfillPaymentAfterApproval(params: {
     }
 
     const telegramId = dbUser.telegram_id;
-    const { expiryIso, expiryFa } = await computeAccountExpiry(
-        inv,
-        planSlug,
-        productTypeService
-    );
+    const planData = await catalogService.getPlanByInternalPlanKey(plan);
+    const planDays = planData?.unit === 'days' ? Number(planData.metricValue) : 0;
+    if (!Number.isFinite(planDays) || planDays <= 0) {
+        return { ok: false, error: 'invalid_plan_days' };
+    }
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + planDays);
+    const expiryFa = expiryDate.toLocaleDateString('fa-IR');
 
     try {
         await inventoryService.markSold(inv.id, dbUser.id, paymentId);
@@ -150,7 +153,8 @@ export async function fulfillPaymentAfterApproval(params: {
                 dbUser.id,
                 inv.username,
                 inv.password,
-                planSlug,
+                plan,
+                planDays,
                 {
                     inventory_id: inv.id,
                     config_format: inv.config_format,
@@ -222,7 +226,7 @@ export async function deliverInventoryForCompletedPayment(params: {
     paymentService: PaymentService;
     inventoryService: InventoryService;
     vpnAccountService: VpnAccountService;
-    productTypeService: ProductTypeService;
+    catalogService: CatalogService;
     bot: Bot;
     payment: Payment;
     isTestMode: boolean;
@@ -232,6 +236,7 @@ export async function deliverInventoryForCompletedPayment(params: {
         payment,
         inventoryService,
         vpnAccountService,
+        catalogService,
         userService,
         bot,
         productTypeService,
@@ -239,19 +244,20 @@ export async function deliverInventoryForCompletedPayment(params: {
         adminBotToken,
     } = params;
 
-    const planSlug = payment.plan;
-    const inv = await inventoryService.takeNextForPlan(planSlug);
+    const plan = payment.plan;
+    const inv = await inventoryService.takeNextForPlan(plan);
     if (!inv) return { ok: false, error: 'no_inventory' };
 
     const dbUser = await userService.getUserById(payment.user_id);
     if (!dbUser) return { ok: false, error: 'user_not_found' };
 
     const telegramId = dbUser.telegram_id;
-    const { expiryIso, expiryFa } = await computeAccountExpiry(
-        inv,
-        planSlug,
-        productTypeService
-    );
+    const planData = await catalogService.getPlanByInternalPlanKey(plan);
+    const planDays = planData?.unit === 'days' ? Number(planData.metricValue) : 0;
+    if (!Number.isFinite(planDays) || planDays <= 0) return { ok: false, error: 'invalid_plan_days' };
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + planDays);
+    const expiryFa = expiryDate.toLocaleDateString('fa-IR');
 
     try {
         await inventoryService.markSold(inv.id, dbUser.id, payment.id);
@@ -261,7 +267,7 @@ export async function deliverInventoryForCompletedPayment(params: {
 
     try {
         if (!isTestMode) {
-            await vpnAccountService.createVpnAccount(dbUser.id, inv.username, inv.password, planSlug, {
+            await vpnAccountService.createVpnAccount(dbUser.id, inv.username, inv.password, plan, planDays, {
                 inventory_id: inv.id,
                 config_format: inv.config_format,
                 expiryDateIso: expiryIso,

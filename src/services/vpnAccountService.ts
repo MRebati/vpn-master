@@ -1,6 +1,5 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { Database, VpnAccount } from '../types';
-import { VpnPlanKey, VPN_PLANS } from '../constants';
 import crypto from 'crypto';
 
 /**
@@ -21,28 +20,14 @@ export class VpnAccountService {
         username: string,
         password: string,
         plan: string,
-        opts?: {
-            inventory_id?: number | null;
-            config_format?: string | null;
-            expiryDateIso?: string;
-        }
+        planDurationDays: number,
+        opts?: { inventory_id?: number | null; config_format?: string | null }
     ): Promise<VpnAccount> {
         try {
             console.log(`[VPN_SERVICE] Creating VPN account for user ${userId} with plan ${plan}`);
 
-            let expiryDate: Date;
-            if (opts?.expiryDateIso) {
-                expiryDate = new Date(opts.expiryDateIso);
-            } else {
-                const planDuration = VPN_PLANS[plan as VpnPlanKey]?.days;
-                if (planDuration) {
-                    expiryDate = new Date();
-                    expiryDate.setDate(expiryDate.getDate() + planDuration);
-                } else {
-                    expiryDate = new Date();
-                    expiryDate.setFullYear(expiryDate.getFullYear() + 10);
-                }
-            }
+            const expiryDate = new Date();
+            expiryDate.setDate(expiryDate.getDate() + planDurationDays);
 
             const { data: account, error } = await this.supabase
                 .from('vpn_accounts')
@@ -143,7 +128,7 @@ export class VpnAccountService {
     /**
      * Update the expiry date of a VPN account based on a plan
      */
-    async extendVpnAccount(accountId: number, plan: VpnPlanKey): Promise<void> {
+    async extendVpnAccount(accountId: number, plan: string, planDurationDays: number): Promise<void> {
         try {
             console.log(`[VPN_SERVICE] Extending VPN account ${accountId} with plan ${plan}`);
 
@@ -158,12 +143,11 @@ export class VpnAccountService {
                 throw new Error(`VPN account with ID ${accountId} not found`);
             }
 
-            const planDuration = VPN_PLANS[plan].days;
             const currentExpiry = new Date(currentAccount.expiry_date);
             const now = new Date();
 
             const baseDate = currentExpiry > now ? currentExpiry : now;
-            baseDate.setDate(baseDate.getDate() + planDuration);
+            baseDate.setDate(baseDate.getDate() + planDurationDays);
 
             const { error: updateError } = await this.supabase
                 .from('vpn_accounts')

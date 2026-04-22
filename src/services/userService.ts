@@ -1,6 +1,6 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { Database, User } from '../types';
-import { UserStep, VpnPlanKey } from '../constants';
+import { UserStep } from '../constants';
 
 /**
  * Service class for managing user operations
@@ -121,7 +121,7 @@ export class UserService {
      * @param plan - Selected VPN plan
      * @param amount - Plan price
      */
-    async selectPlan(userId: number, plan: VpnPlanKey, amount: number): Promise<void> {
+    async selectPlan(userId: number, plan: string, amount: number): Promise<void> {
         try {
             console.log(`[USER_SERVICE] Setting plan for user ${userId}: ${plan}, amount: ${amount}`);
             

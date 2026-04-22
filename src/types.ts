@@ -1,4 +1,4 @@
-import { UserStep, VpnPlanKey } from './constants';
+import { UserStep } from './constants';
 
 export interface User {
     id: number;
@@ -6,7 +6,7 @@ export interface User {
     first_name: string;
     username?: string;
     step: UserStep;
-    selected_plan?: VpnPlanKey;
+    selected_plan?: string;
     amount?: number;
     vpn_username?: string;
     vpn_password?: string;
@@ -46,7 +46,6 @@ export interface Payment {
     id: number;
     user_id: number;
     amount: number;
-    /** Plan slug: legacy `1month` / `3months` or custom product type slug */
     plan: string;
     card_last_digits?: string;
     transaction_id: string;
@@ -83,6 +82,23 @@ export interface AccountInventory {
     updated_at: string;
 }
 
+export interface ProductType {
+    id: number;
+    slug: string | null;
+    code: string | null;
+    plan_key: string | null;
+    title: string | null;
+    label_fa: string | null;
+    unit: string | null;
+    metric_value: number | null;
+    days: number | null;
+    price_toman: number | null;
+    price: number | null;
+    rating: number | null;
+    guideline_text: string | null;
+    is_catalog_visible: boolean | null;
+}
+
 export interface Database {
     public: {
         Tables: {
@@ -111,11 +127,99 @@ export interface Database {
                 Insert: Omit<AccountInventory, 'id' | 'created_at' | 'updated_at'>;
                 Update: Partial<Omit<AccountInventory, 'id'>>;
             };
-            vpn_product_types: {
-                Row: VpnProductType;
-                Insert: Omit<VpnProductType, 'id' | 'created_at'>;
-                Update: Partial<Omit<VpnProductType, 'id' | 'created_at'>>;
+            product_types: {
+                Row: ProductType;
+                Insert: Partial<Omit<ProductType, 'id'>>;
+                Update: Partial<Omit<ProductType, 'id'>>;
             };
         };
     };
+}
+
+// ---------- Domain models (application layer) ----------
+export type ProductUnit = 'days' | 'gb';
+export type ConfigFormat = 'openvpn' | 'v2ray';
+
+export type PaymentLifecycleStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'EXPIRED';
+export type ReviewStatus = 'pending' | 'approved' | 'rejected';
+
+export type PaymentMethodKind = 'rial_card' | 'ton' | 'crypto' | 'other';
+export type PaymentMethodPayee = 'platform' | 'supplier';
+
+export interface PublicPlan {
+    id: number;
+    slug: string;
+    title: string;
+    unit: ProductUnit;
+    metricValue: number;
+    priceToman: number;
+    rating?: number | null;
+    guidelineText?: string | null;
+    isCatalogVisible: boolean;
+    /**
+     * Internal key required by current fulfillment pipeline.
+     * Never shown to end-users.
+     */
+    internalPlanKey: string;
+    productTypeId?: number | null;
+}
+
+export interface PublicPaymentMethod {
+    id: number;
+    productTypeId: number;
+    kind: PaymentMethodKind;
+    label: string;
+    instructions?: string | null;
+    payToValue?: string | null;
+    metadata?: Record<string, unknown>;
+}
+
+export interface CheckoutSession {
+    telegramUserId: number;
+    productTypeId: number;
+    paymentMethodId: number;
+    quotedAmountToman: number;
+    createdAt: string;
+    expiresAt: string;
+}
+
+export interface PaymentInstruction {
+    paymentMethodId: number;
+    kind: PaymentMethodKind;
+    label: string;
+    amountToman: number;
+    payToValue?: string | null;
+    instructionText: string;
+    deepLink?: string | null;
+    qrPayload?: string | null;
+}
+
+export interface PaymentSubmission {
+    telegramUserId: number;
+    productTypeId: number;
+    paymentMethodId: number;
+    amountToman: number;
+    transactionId: string;
+    cardLastDigits?: string | null;
+    proofFileId?: string | null;
+    proofType?: 'photo' | 'document' | null;
+}
+
+export interface CustomerOrderStatus {
+    paymentId: number;
+    status: PaymentLifecycleStatus;
+    reviewStatus: ReviewStatus;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface DeliveryPackage {
+    vpnUsername: string;
+    vpnPassword: string;
+    configFormat: ConfigFormat;
+    configText?: string | null;
+    configFileId?: string | null;
+    connectionUrl?: string | null;
+    guidelineText?: string | null;
+    providerPanelUrl?: string | null;
 }
