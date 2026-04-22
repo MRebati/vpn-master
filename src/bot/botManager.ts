@@ -43,6 +43,43 @@ export class BotManager {
     >();
     private tonProviderToken: string | undefined;
 
+    private formatPaymentMethodSummary(rawCardDetails: string | null | undefined): string {
+        if (!rawCardDetails) return 'ثبت نشده';
+        const trimmed = rawCardDetails.trim();
+        if (!trimmed) return 'ثبت نشده';
+        try {
+            const parsed = JSON.parse(trimmed) as {
+                paymentMethodKind?: string;
+                paymentMethodId?: number;
+                txProof?: string;
+            };
+            if (parsed && typeof parsed === 'object') {
+                const labelMap: Record<string, string> = {
+                    rial_card: 'کارت‌به‌کارت',
+                    ton: 'TON',
+                    crypto: 'Crypto',
+                    other: 'سایر',
+                };
+                const kindLabel = parsed.paymentMethodKind
+                    ? (labelMap[parsed.paymentMethodKind] ?? parsed.paymentMethodKind)
+                    : null;
+                const txProof =
+                    typeof parsed.txProof === 'string' && parsed.txProof.trim().length > 0
+                        ? parsed.txProof.trim()
+                        : null;
+                if (kindLabel && txProof) return `${kindLabel} · TxHash: ${txProof}`;
+                if (kindLabel && typeof parsed.paymentMethodId === 'number') {
+                    return `${kindLabel} (ID: ${parsed.paymentMethodId})`;
+                }
+                if (kindLabel) return kindLabel;
+                if (txProof) return `TxHash: ${txProof}`;
+            }
+        } catch {
+            // Legacy values are plain text (e.g. last 4 digits or manual markers).
+        }
+        return trimmed;
+    }
+
     private getSalesPausedMessage(): string {
         return (
             `${MESSAGES.SALES_PAUSED}\n\n` +
@@ -777,7 +814,7 @@ export class BotManager {
                     `💰 Amount: ${escapeHtml(String(payment.amount))} تومان\n` +
                     `📅 Plan: ${escapeHtml(payment.plan)}\n` +
                     `📊 Status: <b>${escapeHtml(payment.status.toUpperCase())}</b>\n` +
-                    `💳 Card: ${escapeHtml(payment.card_last_digits || 'Not provided')}\n` +
+                    `💳 Payment Method: ${escapeHtml(this.formatPaymentMethodSummary(payment.card_last_digits ?? null))}\n` +
                     `📆 Created: ${escapeHtml(new Date(payment.created_at).toLocaleString('fa-IR'))}\n` +
                     `📆 Updated: ${escapeHtml(new Date(payment.updated_at).toLocaleString('fa-IR'))}`;
 

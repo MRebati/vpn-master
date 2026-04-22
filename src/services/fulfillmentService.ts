@@ -26,16 +26,23 @@ function normalizeConnectionExt(format: string | null | undefined): string {
     return 'conf';
 }
 
+function isSingleUrlPayload(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed || /\s/.test(trimmed)) return false;
+    return /^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(trimmed);
+}
+
 function resolveConnectionPayload(
     inv: AccountInventory,
     productType: { delivery_config_text?: string | null; delivery_config_format?: string | null } | null
-): { text: string; ext: string } | null {
+): { text: string; ext: string; isUrl: boolean } | null {
     const text =
         inv.config_text?.trim() ||
         (productType?.delivery_config_text ? productType.delivery_config_text.trim() : '');
     if (!text) return null;
+    const isUrl = isSingleUrlPayload(text);
     const ext = normalizeConnectionExt(inv.config_format || productType?.delivery_config_format || null);
-    return { text, ext };
+    return { text, ext, isUrl };
 }
 
 function connectionHelpText(
@@ -64,7 +71,6 @@ async function sendConnectionPackage(params: {
     const productType = inv.product_type_id
         ? await productTypeService.getById(inv.product_type_id)
         : null;
-    const ext = normalizeConnectionExt(inv.config_format);
     const keyboard = {
         inline_keyboard: [[{ text: '📘 راهنمای اتصال', callback_data: 'connection-help' }]],
     };
@@ -79,11 +85,17 @@ async function sendConnectionPackage(params: {
         // 2) Otherwise generate a connection file from inventory or product-type delivery template.
         const payload = resolveConnectionPayload(inv, productType);
         if (payload) {
-            const bytes = new TextEncoder().encode(payload.text);
-            await bot.api.sendDocument(telegramId, new InputFile(bytes, `connection-${inv.id}.${payload.ext}`), {
-                caption: 'فایل اتصال',
-                reply_markup: keyboard,
-            });
+            if (payload.isUrl) {
+                await bot.api.sendMessage(telegramId, `🔗 لینک اتصال:\n${payload.text}`, {
+                    reply_markup: keyboard,
+                });
+            } else {
+                const bytes = new TextEncoder().encode(payload.text);
+                await bot.api.sendDocument(telegramId, new InputFile(bytes, `connection-${inv.id}.${payload.ext}`), {
+                    caption: 'فایل اتصال',
+                    reply_markup: keyboard,
+                });
+            }
         }
     }
 
