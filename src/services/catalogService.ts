@@ -172,8 +172,7 @@ export class CatalogService {
         if (source === 'none') {
             return [this.defaultRialMethod(plan.productTypeId ?? plan.id, fallbackCardNumber)];
         }
-        if (source === 'vpn_product_types' || !plan.productTypeId) {
-            // Legacy catalog has no plan-scoped rail table, so keep rial flow available.
+        if (!plan.productTypeId) {
             return [this.defaultRialMethod(plan.productTypeId ?? plan.id, fallbackCardNumber)];
         }
 
@@ -195,6 +194,7 @@ export class CatalogService {
 
         if (error || !Array.isArray(data) || data.length === 0) {
             // Keep purchase flow functional if rails table is empty/unavailable.
+            // This still allows supplier-specific cards when table rows exist.
             return [this.defaultRialMethod(plan.productTypeId, fallbackCardNumber)];
         }
 
