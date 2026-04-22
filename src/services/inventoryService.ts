@@ -1,6 +1,6 @@
 import { SupabaseClient } from '@supabase/supabase-js';
-import type { Database, AccountInventory, VpnPlanKey } from '../types';
-import { VPN_PLANS } from '../constants';
+import type { Database, AccountInventory } from '../types';
+import { VPN_PLANS, VpnPlanKey } from '../constants';
 
 export class InventoryService {
     constructor(private supabase: SupabaseClient<Database>) {}

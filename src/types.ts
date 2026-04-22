@@ -96,3 +96,91 @@ export interface Database {
         };
     };
 }
+
+// ---------- Domain models (application layer) ----------
+export type ProductUnit = 'days' | 'gb';
+export type ConfigFormat = 'openvpn' | 'v2ray';
+
+export type PaymentLifecycleStatus = 'PENDING' | 'COMPLETED' | 'FAILED' | 'EXPIRED';
+export type ReviewStatus = 'pending' | 'approved' | 'rejected';
+
+export type PaymentMethodKind = 'rial_card' | 'ton' | 'crypto' | 'other';
+export type PaymentMethodPayee = 'platform' | 'supplier';
+
+export interface PublicPlan {
+    id: number;
+    slug: string;
+    title: string;
+    unit: ProductUnit;
+    metricValue: number;
+    priceToman: number;
+    rating?: number | null;
+    guidelineText?: string | null;
+    isCatalogVisible: boolean;
+    /**
+     * Internal key required by current fulfillment pipeline.
+     * Never shown to end-users.
+     */
+    internalPlanKey: VpnPlanKey;
+    productTypeId?: number | null;
+}
+
+export interface PublicPaymentMethod {
+    id: number;
+    productTypeId: number;
+    kind: PaymentMethodKind;
+    label: string;
+    instructions?: string | null;
+    payToValue?: string | null;
+    metadata?: Record<string, unknown>;
+}
+
+export interface CheckoutSession {
+    telegramUserId: number;
+    productTypeId: number;
+    paymentMethodId: number;
+    quotedAmountToman: number;
+    createdAt: string;
+    expiresAt: string;
+}
+
+export interface PaymentInstruction {
+    paymentMethodId: number;
+    kind: PaymentMethodKind;
+    label: string;
+    amountToman: number;
+    payToValue?: string | null;
+    instructionText: string;
+    deepLink?: string | null;
+    qrPayload?: string | null;
+}
+
+export interface PaymentSubmission {
+    telegramUserId: number;
+    productTypeId: number;
+    paymentMethodId: number;
+    amountToman: number;
+    transactionId: string;
+    cardLastDigits?: string | null;
+    proofFileId?: string | null;
+    proofType?: 'photo' | 'document' | null;
+}
+
+export interface CustomerOrderStatus {
+    paymentId: number;
+    status: PaymentLifecycleStatus;
+    reviewStatus: ReviewStatus;
+    createdAt: string;
+    updatedAt: string;
+}
+
+export interface DeliveryPackage {
+    vpnUsername: string;
+    vpnPassword: string;
+    configFormat: ConfigFormat;
+    configText?: string | null;
+    configFileId?: string | null;
+    connectionUrl?: string | null;
+    guidelineText?: string | null;
+    providerPanelUrl?: string | null;
+}

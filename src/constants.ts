@@ -5,6 +5,8 @@ export enum UserStep {
   START = 'start',
   IDLE = 'idle',
   SELECTING_PLAN = 'selecting_plan',
+  AWAITING_PAYMENT_METHOD = 'awaiting_payment_method',
+  AWAITING_PAYMENT_PROOF = 'awaiting_payment_proof',
   AWAITING_PAYMENT = 'awaiting_payment',
   /** @deprecated legacy — migrated to AWAITING_PAYMENT */
   AWAITING_USERNAME = 'awaiting_username',
