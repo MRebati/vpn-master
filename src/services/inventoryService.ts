@@ -10,9 +10,73 @@ export class InventoryService {
     }
 
     /**
-     * Pick oldest available row matching plan_key (NULL means any plan).
+     * Pick oldest available row matching product type / supplier / plan.
+     * Priority:
+     * 1) exact product_type_id
+     * 2) supplier-bound generic stock (product_type_id null)
+     * 3) legacy generic stock by plan_key (product_type_id null)
      */
-    async takeNextForPlan(plan: string): Promise<AccountInventory | null> {
+    async takeNextForPlan(
+        input:
+            | string
+            | {
+                  planKey: string;
+                  productTypeId?: number | null;
+                  supplierId?: number | null;
+              },
+        options?: { productTypeId?: number | null; supplierId?: number | null }
+    ): Promise<AccountInventory | null> {
+        const criteria =
+            typeof input === 'string'
+                ? {
+                      planKey: input,
+                      productTypeId: options?.productTypeId ?? null,
+                      supplierId: options?.supplierId ?? null,
+                  }
+                : {
+                      planKey: input.planKey,
+                      productTypeId: input.productTypeId ?? null,
+                      supplierId: input.supplierId ?? null,
+                  };
+
+        const plan = criteria.planKey;
+        const productTypeId = criteria.productTypeId;
+        if (productTypeId) {
+            const { data, error } = await this.supabase
+                .from('account_inventory')
+                .select('*')
+                .eq('status', 'available')
+                .eq('product_type_id', productTypeId)
+                .order('id', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+            if (error) {
+                console.error('[INVENTORY] takeNextForPlan product_type_id:', error);
+                throw new Error(error.message);
+            }
+            if (data) return data;
+        }
+
+        const supplierId = criteria.supplierId;
+        if (supplierId) {
+            const { data, error } = await this.supabase
+                .from('account_inventory')
+                .select('*')
+                .eq('status', 'available')
+                .eq('supplier_id' as never, supplierId as never)
+                .is('product_type_id', null)
+                .or(`plan_key.is.null,plan_key.eq.${plan}`)
+                .order('id', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+            if (error) {
+                // Keep compatibility with deployments that don't have supplier_id on inventory yet.
+                console.warn('[INVENTORY] supplier-aware fallback skipped:', error.message);
+            } else if (data) {
+                return data;
+            }
+        }
+
         const { data, error } = await this.supabase
             .from('account_inventory')
             .select('*')
@@ -24,7 +88,7 @@ export class InventoryService {
             .maybeSingle();
 
         if (error) {
-            console.error('[INVENTORY] takeNextForPlan:', error);
+            console.error('[INVENTORY] takeNextForPlan legacy:', error);
             throw new Error(error.message);
         }
         return data;

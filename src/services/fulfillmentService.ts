@@ -116,7 +116,12 @@ export async function fulfillPaymentAfterApproval(params: {
     if (payment.status !== 'PENDING') return { ok: false, error: 'not_pending' };
 
     const plan = payment.plan;
-    const inv = await inventoryService.takeNextForPlan(plan);
+    const planData = await catalogService.getPlanByInternalPlanKey(plan);
+    const inv = await inventoryService.takeNextForPlan({
+        planKey: plan,
+        productTypeId: planData?.productTypeId ?? null,
+        supplierId: planData?.supplierId ?? null,
+    });
     if (!inv) {
         return { ok: false, error: 'no_inventory' };
     }
@@ -127,7 +132,6 @@ export async function fulfillPaymentAfterApproval(params: {
     }
 
     const telegramId = dbUser.telegram_id;
-    const planData = await catalogService.getPlanByInternalPlanKey(plan);
     const planDays = planData?.unit === 'days' ? Number(planData.metricValue) : 0;
     if (!Number.isFinite(planDays) || planDays <= 0) {
         return { ok: false, error: 'invalid_plan_days' };
@@ -241,14 +245,18 @@ export async function deliverInventoryForCompletedPayment(params: {
     } = params;
 
     const plan = payment.plan;
-    const inv = await inventoryService.takeNextForPlan(plan);
+    const planData = await catalogService.getPlanByInternalPlanKey(plan);
+    const inv = await inventoryService.takeNextForPlan({
+        planKey: plan,
+        productTypeId: planData?.productTypeId ?? null,
+        supplierId: planData?.supplierId ?? null,
+    });
     if (!inv) return { ok: false, error: 'no_inventory' };
 
     const dbUser = await userService.getUserById(payment.user_id);
     if (!dbUser) return { ok: false, error: 'user_not_found' };
 
     const telegramId = dbUser.telegram_id;
-    const planData = await catalogService.getPlanByInternalPlanKey(plan);
     const planDays = planData?.unit === 'days' ? Number(planData.metricValue) : 0;
     if (!Number.isFinite(planDays) || planDays <= 0) return { ok: false, error: 'invalid_plan_days' };
     const expiryDate = new Date();
