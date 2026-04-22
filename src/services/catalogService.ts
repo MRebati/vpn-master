@@ -2,6 +2,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, PaymentMethodKind, PublicPaymentMethod, PublicPlan } from '../types';
 
 type DbRecord = Record<string, unknown>;
+type CatalogSource = 'product_types' | 'vpn_product_types' | 'none';
 
 function asNumber(value: unknown): number | null {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -37,36 +38,63 @@ function normalizeKind(kind: unknown): PaymentMethodKind {
 
 export class CatalogService {
     private readonly supabase: SupabaseClient<Database>;
-    private dbBackedCatalogEnabled: boolean | null = null;
+    private catalogSource: CatalogSource | null = null;
 
     constructor(supabase: SupabaseClient<Database>) {
         this.supabase = supabase;
     }
 
-    /**
-     * Check whether database has catalog tables.
-     */
-    private async hasDbCatalog(): Promise<boolean> {
-        if (this.dbBackedCatalogEnabled !== null) return this.dbBackedCatalogEnabled;
+    private async detectCatalogSource(): Promise<CatalogSource> {
+        if (this.catalogSource !== null) return this.catalogSource;
         try {
-            const { error } = await this.supabase
+            const productTypesProbe = await this.supabase
                 .from('product_types' as never)
                 .select('id', { head: true, count: 'exact' })
                 .limit(1);
-            this.dbBackedCatalogEnabled = !error;
+            if (!productTypesProbe.error) {
+                this.catalogSource = 'product_types';
+                return this.catalogSource;
+            }
+
+            const legacyProbe = await this.supabase
+                .from('vpn_product_types' as never)
+                .select('id', { head: true, count: 'exact' })
+                .limit(1);
+            if (!legacyProbe.error) {
+                this.catalogSource = 'vpn_product_types';
+                return this.catalogSource;
+            }
         } catch {
-            this.dbBackedCatalogEnabled = false;
+            // fall through
         }
-        return this.dbBackedCatalogEnabled;
+        this.catalogSource = 'none';
+        return this.catalogSource;
     }
 
     async listVisiblePlans(): Promise<PublicPlan[]> {
-        if (!(await this.hasDbCatalog())) return [];
+        const source = await this.detectCatalogSource();
+        if (source === 'none') return [];
+
+        if (source === 'vpn_product_types') {
+            const { data, error } = await this.supabase
+                .from('vpn_product_types' as never)
+                .select('*')
+                .eq('is_active', true)
+                .order('sort_order', { ascending: true })
+                .order('id', { ascending: true });
+
+            if (error || !Array.isArray(data) || data.length === 0) return [];
+
+            const rows = data as unknown as DbRecord[];
+            return rows
+                .map((row) => this.mapLegacyPlanRow(row))
+                .filter((p): p is PublicPlan => Boolean(p))
+                .filter((p) => p.isCatalogVisible);
+        }
 
         const { data, error } = await this.supabase
             .from('product_types' as never)
             .select('*')
-            .eq('is_catalog_visible', true)
             .order('id', { ascending: true });
 
         if (error || !Array.isArray(data) || data.length === 0) return [];
@@ -103,7 +131,14 @@ export class CatalogService {
         plan: PublicPlan,
         fallbackCardNumber: string
     ): Promise<PublicPaymentMethod[]> {
-        if (!(await this.hasDbCatalog()) || !plan.productTypeId) return [];
+        const source = await this.detectCatalogSource();
+        if (source === 'none') {
+            return [this.defaultRialMethod(plan.productTypeId ?? plan.id, fallbackCardNumber)];
+        }
+        if (source === 'vpn_product_types' || !plan.productTypeId) {
+            // Legacy catalog has no plan-scoped rail table, so keep rial flow available.
+            return [this.defaultRialMethod(plan.productTypeId ?? plan.id, fallbackCardNumber)];
+        }
 
         const { data, error } = await this.supabase
             .from('product_type_payment_methods' as never)
@@ -112,10 +147,17 @@ export class CatalogService {
             .eq('is_active', true)
             .order('id', { ascending: true });
 
-        if (error || !Array.isArray(data) || data.length === 0) return [];
+        if (error || !Array.isArray(data) || data.length === 0) {
+            // Keep purchase flow functional if rails table is empty/unavailable.
+            return [this.defaultRialMethod(plan.productTypeId, fallbackCardNumber)];
+        }
 
         const rows = data as unknown as DbRecord[];
-        return rows.map((row) => this.mapPaymentMethodRow(row, plan.productTypeId!, fallbackCardNumber));
+        const mapped = rows
+            .map((row) => this.mapPaymentMethodRow(row, plan.productTypeId!, fallbackCardNumber))
+            .filter((m): m is PublicPaymentMethod => Boolean(m));
+        if (mapped.length > 0) return mapped;
+        return [this.defaultRialMethod(plan.productTypeId, fallbackCardNumber)];
     }
 
     private mapPlanRow(row: DbRecord): PublicPlan | null {
@@ -147,7 +189,9 @@ export class CatalogService {
             asNumber(row.priceToman) ??
             asNumber(row.price) ??
             0;
-        const isCatalogVisible = asBoolean(row.is_catalog_visible) ?? true;
+        const visibilityFlag = asBoolean(row.is_catalog_visible);
+        const activeFlag = asBoolean(row.is_active);
+        const isCatalogVisible = (visibilityFlag ?? true) && (activeFlag ?? true);
         const rating = asNumber(row.rating);
         const guidelineText =
             asString(row.guideline_text) ?? asString(row.guidelineText) ?? null;
@@ -171,11 +215,40 @@ export class CatalogService {
         };
     }
 
+    private mapLegacyPlanRow(row: DbRecord): PublicPlan | null {
+        const id = asNumber(row.id);
+        const slug = asString(row.slug);
+        if (!id || !slug) return null;
+
+        const title = asString(row.label_fa) ?? slug;
+        const unitValue = asString(row.unit)?.toLowerCase();
+        const unit: 'days' | 'gb' = unitValue === 'gb' ? 'gb' : 'days';
+        const metricValue = asNumber(row.metric_value) ?? 0;
+        const priceToman = asNumber(row.price_toman) ?? 0;
+        const isCatalogVisible = asBoolean(row.is_active) ?? true;
+
+        return {
+            id,
+            slug,
+            title,
+            unit,
+            metricValue,
+            priceToman,
+            rating: null,
+            guidelineText: null,
+            isCatalogVisible,
+            internalPlanKey: slug,
+            productTypeId: id,
+        };
+    }
+
     private mapPaymentMethodRow(
         row: DbRecord,
         productTypeId: number,
         fallbackCardNumber: string
-    ): PublicPaymentMethod {
+    ): PublicPaymentMethod | null {
+        const isActive = asBoolean(row.is_active);
+        if (isActive === false) return null;
         const id = asNumber(row.id) ?? 1;
         const kind = normalizeKind(row.kind ?? row.method_kind ?? row.payment_kind);
         const label =
@@ -206,6 +279,21 @@ export class CatalogService {
                 network: asString(row.network),
                 chain: asString(row.chain),
             },
+        };
+    }
+
+    private defaultRialMethod(
+        productTypeId: number,
+        fallbackCardNumber: string
+    ): PublicPaymentMethod {
+        return {
+            id: productTypeId * 1000 + 1,
+            productTypeId,
+            kind: 'rial_card',
+            label: 'کارت به کارت',
+            payToValue: fallbackCardNumber,
+            instructions: null,
+            metadata: {},
         };
     }
 }
