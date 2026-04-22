@@ -282,6 +282,27 @@ export class PaymentService {
         return 'other';
     }
 
+    getPaymentMethodKindFromPayment(payment: Payment): PaymentMethodKind {
+        if (payment.card_last_digits) {
+            try {
+                const metadata = JSON.parse(payment.card_last_digits) as {
+                    paymentMethodKind?: PaymentMethodKind;
+                };
+                if (
+                    metadata.paymentMethodKind === 'rial_card' ||
+                    metadata.paymentMethodKind === 'ton' ||
+                    metadata.paymentMethodKind === 'crypto' ||
+                    metadata.paymentMethodKind === 'other'
+                ) {
+                    return metadata.paymentMethodKind;
+                }
+            } catch {
+                // Legacy rows may contain non-JSON card_last_digits.
+            }
+        }
+        return this.inferPaymentMethodKind(payment.transaction_id);
+    }
+
     async getLatestOrderStatus(userId: number): Promise<CustomerOrderStatus | null> {
         const { data, error } = await this.supabase
             .from('payments')
@@ -441,6 +462,62 @@ export class PaymentService {
 
         if (error) throw new Error(`recordProof: ${error.message}`);
         return data;
+    }
+
+    /**
+     * Store textual proof (e.g. TON/Crypto tx hash) for manual review.
+     * We keep payment method metadata in card_last_digits and append txProof.
+     */
+    async recordTextProof(
+        paymentId: number,
+        txProof: string,
+        proofType: 'text' | 'tx_hash' = 'tx_hash',
+        paymentMethodKind?: PaymentMethodKind
+    ): Promise<Payment> {
+        const payment = await this.getPaymentById(paymentId);
+        if (!payment) throw new Error('recordTextProof: payment_not_found');
+        if (payment.status !== 'PENDING') throw new Error('recordTextProof: payment_not_pending');
+
+        let metadata: Record<string, unknown> = {};
+        if (payment.card_last_digits) {
+            try {
+                const parsed = JSON.parse(payment.card_last_digits) as Record<string, unknown>;
+                if (parsed && typeof parsed === 'object') metadata = parsed;
+            } catch {
+                // Keep backward compatibility for non-JSON legacy values.
+                metadata = {};
+            }
+        }
+
+        const mergedMetadata = JSON.stringify({
+            ...metadata,
+            ...(paymentMethodKind ? { paymentMethodKind } : {}),
+            txProof: txProof.trim(),
+            txProofSubmittedAt: new Date().toISOString(),
+        });
+
+        const { data, error } = await this.supabase
+            .from('payments')
+            .update({
+                card_last_digits: mergedMetadata,
+                proof_type: proofType,
+                review_status: 'pending',
+            })
+            .eq('id', paymentId)
+            .eq('status', 'PENDING')
+            .select()
+            .single();
+
+        if (error) throw new Error(`recordTextProof: ${error.message}`);
+        return data;
+    }
+
+    async recordProofText(
+        paymentId: number,
+        txProof: string,
+        paymentMethodKind?: PaymentMethodKind
+    ): Promise<Payment> {
+        return this.recordTextProof(paymentId, txProof, 'tx_hash', paymentMethodKind);
     }
 
     async setReviewStatus(

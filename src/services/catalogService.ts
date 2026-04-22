@@ -106,7 +106,9 @@ export class CatalogService {
                           // Keep deterministic output where supported by client chain.
                           ['order']('id', { ascending: true })
                     : legacyBaseQuery;
-            const { data, error } = await legacyOrderedQuery;
+            const legacyResult = (await legacyOrderedQuery) as { data?: unknown; error?: unknown };
+            const data = legacyResult.data;
+            const error = legacyResult.error;
 
             if (error || !Array.isArray(data) || data.length === 0) return [];
 
@@ -125,7 +127,12 @@ export class CatalogService {
                       order: (column: string, opts: { ascending: boolean }) => unknown;
                   }).order('id', { ascending: true })
                 : productTypesBaseQuery;
-        const { data, error } = await productTypesOrderedQuery;
+        const productTypesResult = (await productTypesOrderedQuery) as {
+            data?: unknown;
+            error?: unknown;
+        };
+        const data = productTypesResult.data;
+        const error = productTypesResult.error;
 
         if (error || !Array.isArray(data) || data.length === 0) return [];
 
@@ -182,7 +189,9 @@ export class CatalogService {
                       order: (column: string, opts: { ascending: boolean }) => unknown;
                   }).order('id', { ascending: true })
                 : methodsBaseQuery;
-        const { data, error } = await methodsOrderedQuery;
+        const methodsResult = (await methodsOrderedQuery) as { data?: unknown; error?: unknown };
+        const data = methodsResult.data;
+        const error = methodsResult.error;
 
         if (error || !Array.isArray(data) || data.length === 0) {
             // Keep purchase flow functional if rails table is empty/unavailable.

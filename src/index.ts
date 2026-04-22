@@ -35,6 +35,10 @@ export interface Env {
     TEST_MODE?: string; // "true" to enable test mode
     CHANNEL_ID?: string; // Channel ID for notifications
     /**
+     * Telegram payments provider token used for TON/Stars invoice flow.
+     */
+    TON_PROVIDER_TOKEN?: string;
+    /**
      * Optional behavior override when sales toggle cannot be read from DB.
      * Default is fail-open (allow sales) to preserve current live behavior.
      */

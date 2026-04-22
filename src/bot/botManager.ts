@@ -41,6 +41,7 @@ export class BotManager {
             createdAt: number;
         }
     >();
+    private tonProviderToken: string | undefined;
 
     private getSalesPausedMessage(): string {
         return (
@@ -79,6 +80,7 @@ export class BotManager {
         try {
             console.log(`[BOT_INIT] Initializing bot with token: ${env.BOT_TOKEN.substring(0, 8)}...`);
             this.env = env;
+            this.tonProviderToken = env.TON_PROVIDER_TOKEN;
             
             // Create bot instance
             this.bot = new Bot<BotContext>(env.BOT_TOKEN);
@@ -287,6 +289,69 @@ export class BotManager {
             parse_mode: "MarkdownV2",
             reply_markup: keyboard,
         });
+    }
+
+    private async recoverPaymentMethodSession(
+        ctx: BotContext
+    ): Promise<
+        | {
+              plan: PublicPlan;
+              methods: PublicPaymentMethod[];
+              createdAt: number;
+          }
+        | null
+    > {
+        const cached = this.paymentMethodContextByTelegramId.get(ctx.from.id);
+        if (cached && Date.now() - cached.createdAt <= 20 * 60_000) return cached;
+
+        const user = await this.userService.getOrCreateUser(
+            ctx.from.id,
+            ctx.from.first_name,
+            ctx.from.username
+        );
+        if (!user.selected_plan) return null;
+        const plan = await this.catalogService.getPlanByInternalPlanKey(user.selected_plan);
+        if (!plan || !plan.isCatalogVisible) return null;
+        const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
+        const methods = await this.checkoutService.listPaymentMethodsForPlan(plan, card);
+        const recovered = {
+            plan,
+            methods,
+            createdAt: Date.now(),
+        };
+        this.paymentMethodContextByTelegramId.set(ctx.from.id, recovered);
+        return recovered;
+    }
+
+    private async sendTonInvoice(
+        ctx: BotContext,
+        input: {
+            plan: PublicPlan;
+            method: PublicPaymentMethod;
+            paymentId: number;
+            transactionId: string;
+            amountToman: number;
+        }
+    ): Promise<void> {
+        if (!this.tonProviderToken) {
+            await ctx.reply(
+                "درگاه پرداخت TON موقتاً در دسترس نیست. لطفاً روش پرداخت دیگری انتخاب کنید."
+            );
+            return;
+        }
+        const payload = `ton:${input.paymentId}:${input.transactionId}`;
+        await this.bot.api.sendInvoice(
+            ctx.from.id,
+            `اشتراک VPN - ${input.plan.title}`,
+            `پرداخت Telegram Stars برای پلن ${input.plan.title}\nشناسه: ${input.transactionId}`,
+            payload,
+            "XTR",
+            [{ label: `پلن ${input.plan.title}`, amount: Math.max(1, Math.round(input.amountToman)) }],
+            {
+                provider_token: this.tonProviderToken,
+            }
+        );
+        await ctx.reply("پس از پرداخت موفق در تلگرام، اشتراک شما به‌صورت خودکار تحویل می‌شود.");
     }
 
     private async handlePlanSelection(ctx: BotContext, slug: string): Promise<void> {
@@ -812,7 +877,7 @@ export class BotManager {
             await ctx.answerCallbackQuery();
             if (!(await this.ensureSalesEnabledForPurchase(ctx, 'payment-method-callback'))) return;
             const methodId = Number(ctx.match![1]);
-            const session = this.paymentMethodContextByTelegramId.get(ctx.from.id);
+            const session = await this.recoverPaymentMethodSession(ctx);
             if (!session || Date.now() - session.createdAt > 20 * 60_000) {
                 await ctx.reply("جلسه خرید منقضی شده است. لطفاً دوباره /start را بزنید.");
                 return;
@@ -834,17 +899,31 @@ export class BotManager {
                 plan: session.plan,
                 method,
             });
-            await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT_PROOF);
+            if (method.kind === "ton") {
+                await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT);
+            } else {
+                await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT_PROOF);
+            }
 
             await ctx.reply(
                 `📋 پلن انتخابی: ${session.plan.title}\n💲 مبلغ قابل پرداخت: ${checkout.amount.toLocaleString()} تومان`
             );
-            const railNote = method.instructions ? `\n\n${method.instructions}` : "";
-            await ctx.reply(`${checkout.instruction.instructionText}${railNote}`, {
-                parse_mode: "MarkdownV2",
-            });
-            if (checkout.instruction.deepLink) {
-                await ctx.reply(`🔗 لینک پرداخت:\n${checkout.instruction.deepLink}`);
+            if (method.kind === "ton") {
+                await this.sendTonInvoice(ctx, {
+                    plan: session.plan,
+                    method,
+                    paymentId: checkout.paymentId,
+                    transactionId: checkout.transactionId,
+                    amountToman: checkout.amount,
+                });
+            } else {
+                const railNote = method.instructions ? `\n\n${method.instructions}` : "";
+                await ctx.reply(`${checkout.instruction.instructionText}${railNote}`, {
+                    parse_mode: "MarkdownV2",
+                });
+                if (checkout.instruction.deepLink) {
+                    await ctx.reply(`🔗 لینک پرداخت:\n${checkout.instruction.deepLink}`);
+                }
             }
         });
 
@@ -994,6 +1073,94 @@ export class BotManager {
                 }
             } catch (e) {
                 console.error("[MEDIA_HANDLER]", e);
+            }
+        });
+
+        this.bot.on("message:text", async (ctx, next) => {
+            if (ctx.message.text.startsWith("/")) return next();
+            const user = await this.userService.getOrCreateUser(
+                ctx.from.id,
+                ctx.from.first_name,
+                ctx.from.username
+            );
+            if (
+                user.step !== UserStep.AWAITING_PAYMENT &&
+                user.step !== UserStep.AWAITING_PAYMENT_PROOF
+            ) {
+                return next();
+            }
+            const pending = await this.paymentService.getLatestPendingPayment(user.id);
+            if (!pending) return next();
+            const kind = this.paymentService.getPaymentMethodKindFromPayment(pending);
+            if (kind !== "crypto" && kind !== "ton") {
+                return next();
+            }
+            const normalized = ctx.message.text.trim();
+            const txHashMatch = normalized.match(/\b(0x[a-fA-F0-9]{20,}|[A-Za-z0-9_-]{18,})\b/);
+            if (!txHashMatch) {
+                await ctx.reply(
+                    "برای پرداخت رمزارزی، لطفاً هش تراکنش (Tx Hash) را ارسال کنید یا اسکرین‌شات بفرستید."
+                );
+                return;
+            }
+            await this.paymentService.recordProofText(pending.id, txHashMatch[1], kind);
+            await this.userService.setUserStep(user.id, UserStep.CONFIRMING_PAYMENT);
+            await ctx.reply(MESSAGES.PAYMENT_RECEIVED, { parse_mode: PARSE_HTML });
+
+            const channelId = this.env.CHANNEL_ID ? `-100${this.env.CHANNEL_ID}` : null;
+            if (!channelId) return;
+            const captionHtml =
+                `🔔 <b>درخواست بررسی پرداخت رمزارزی</b>\n\n` +
+                `👤 ${escapeHtml(ctx.from.first_name || "")}\n` +
+                `🪙 نوع: ${escapeHtml(kind.toUpperCase())}\n` +
+                `💰 ${escapeHtml(pending.amount.toLocaleString())} تومان\n` +
+                `🧾 TxHash: <code>${escapeHtml(txHashMatch[1])}</code>\n` +
+                `🔖 <code>${escapeHtml(pending.transaction_id)}</code> · payment #${pending.id}`;
+            const keyboard = {
+                inline_keyboard: [
+                    [
+                        { text: "✅ تایید", callback_data: `ap:${pending.id}` },
+                        { text: "❌ رد", callback_data: `rj:${pending.id}` },
+                    ],
+                ],
+            };
+            try {
+                await this.bot.api.sendMessage(channelId, captionHtml, {
+                    parse_mode: PARSE_HTML,
+                    reply_markup: keyboard,
+                });
+            } catch (notifyErr) {
+                console.error("[CRYPTO_PROOF_NOTIFY]", notifyErr);
+            }
+        });
+
+        this.bot.on("pre_checkout_query", async (ctx) => {
+            await ctx.answerPreCheckoutQuery(true);
+        });
+
+        this.bot.on("message:successful_payment", async (ctx) => {
+            const payload = ctx.message.successful_payment.invoice_payload ?? "";
+            if (!payload.startsWith("ton:")) return;
+            const parts = payload.split(":");
+            const paymentId = Number(parts[1]);
+            if (!Number.isFinite(paymentId) || paymentId <= 0) return;
+            if (!(await this.ensureSalesEnabledForPurchase(ctx, "ton-successful-payment"))) return;
+            const result = await fulfillPaymentAfterApproval({
+                userService: this.userService,
+                paymentService: this.paymentService,
+                inventoryService: this.inventoryService,
+                vpnAccountService: this.vpnAccountService,
+                productTypeService: this.inventoryService.getProductTypes(),
+                catalogService: this.catalogService,
+                bot: this.bot,
+                paymentId,
+                isTestMode: this.env.TEST_MODE === "true",
+                adminBotToken: this.env.ADMIN_BOT_TOKEN,
+            });
+            if (!result.ok) {
+                await ctx.reply("پرداخت ثبت شد ولی تحویل خودکار انجام نشد. پشتیبانی پیگیری می‌کند.");
+            } else {
+                await ctx.reply("✅ پرداخت با موفقیت انجام شد و اشتراک شما تحویل داده شد.");
             }
         });
     }
