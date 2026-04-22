@@ -49,18 +49,34 @@ export class CatalogService {
         try {
             const productTypesProbe = await this.supabase
                 .from('product_types' as never)
-                .select('id', { head: true, count: 'exact' })
-                .limit(1);
-            if (!productTypesProbe.error) {
+                .select('id,is_catalog_visible,is_active');
+            if (!productTypesProbe.error && Array.isArray(productTypesProbe.data)) {
+                const rows = productTypesProbe.data as unknown as DbRecord[];
+                const hasVisible = rows.some((row) => {
+                    const visibilityFlag = asBoolean(row.is_catalog_visible);
+                    const activeFlag = asBoolean(row.is_active);
+                    return (visibilityFlag ?? true) && (activeFlag ?? true);
+                });
+                if (hasVisible) {
+                    this.catalogSource = 'product_types';
+                    return this.catalogSource;
+                }
+            } else if (!productTypesProbe.error) {
                 this.catalogSource = 'product_types';
                 return this.catalogSource;
             }
 
             const legacyProbe = await this.supabase
                 .from('vpn_product_types' as never)
-                .select('id', { head: true, count: 'exact' })
-                .limit(1);
-            if (!legacyProbe.error) {
+                .select('id,is_active');
+            if (!legacyProbe.error && Array.isArray(legacyProbe.data)) {
+                const rows = legacyProbe.data as unknown as DbRecord[];
+                const hasVisible = rows.some((row) => asBoolean(row.is_active) ?? true);
+                if (hasVisible) {
+                    this.catalogSource = 'vpn_product_types';
+                    return this.catalogSource;
+                }
+            } else if (!legacyProbe.error) {
                 this.catalogSource = 'vpn_product_types';
                 return this.catalogSource;
             }
@@ -76,12 +92,21 @@ export class CatalogService {
         if (source === 'none') return [];
 
         if (source === 'vpn_product_types') {
-            const { data, error } = await this.supabase
+            const legacyBaseQuery = this.supabase
                 .from('vpn_product_types' as never)
                 .select('*')
-                .eq('is_active', true)
-                .order('sort_order', { ascending: true })
-                .order('id', { ascending: true });
+                .eq('is_active', true);
+            const legacyOrderedQuery =
+                typeof (legacyBaseQuery as { order?: (...args: unknown[]) => unknown }).order ===
+                'function'
+                    ? (legacyBaseQuery as {
+                          order: (column: string, opts: { ascending: boolean }) => unknown;
+                      })
+                          .order('sort_order', { ascending: true })
+                          // Keep deterministic output where supported by client chain.
+                          ['order']('id', { ascending: true })
+                    : legacyBaseQuery;
+            const { data, error } = await legacyOrderedQuery;
 
             if (error || !Array.isArray(data) || data.length === 0) return [];
 
@@ -92,10 +117,15 @@ export class CatalogService {
                 .filter((p) => p.isCatalogVisible);
         }
 
-        const { data, error } = await this.supabase
-            .from('product_types' as never)
-            .select('*')
-            .order('id', { ascending: true });
+        const productTypesBaseQuery = this.supabase.from('product_types' as never).select('*');
+        const productTypesOrderedQuery =
+            typeof (productTypesBaseQuery as { order?: (...args: unknown[]) => unknown }).order ===
+            'function'
+                ? (productTypesBaseQuery as {
+                      order: (column: string, opts: { ascending: boolean }) => unknown;
+                  }).order('id', { ascending: true })
+                : productTypesBaseQuery;
+        const { data, error } = await productTypesOrderedQuery;
 
         if (error || !Array.isArray(data) || data.length === 0) return [];
 
@@ -140,12 +170,19 @@ export class CatalogService {
             return [this.defaultRialMethod(plan.productTypeId ?? plan.id, fallbackCardNumber)];
         }
 
-        const { data, error } = await this.supabase
+        const methodsBaseQuery = this.supabase
             .from('product_type_payment_methods' as never)
             .select('*')
             .eq('product_type_id', plan.productTypeId)
-            .eq('is_active', true)
-            .order('id', { ascending: true });
+            .eq('is_active', true);
+        const methodsOrderedQuery =
+            typeof (methodsBaseQuery as { order?: (...args: unknown[]) => unknown }).order ===
+            'function'
+                ? (methodsBaseQuery as {
+                      order: (column: string, opts: { ascending: boolean }) => unknown;
+                  }).order('id', { ascending: true })
+                : methodsBaseQuery;
+        const { data, error } = await methodsOrderedQuery;
 
         if (error || !Array.isArray(data) || data.length === 0) {
             // Keep purchase flow functional if rails table is empty/unavailable.
