@@ -6,7 +6,7 @@ import { VpnAccountService } from "../services/vpnAccountService";
 import { SettingsService } from "../services/settingsService";
 import { InventoryService } from "../services/inventoryService";
 import { fulfillPaymentAfterApproval } from "../services/fulfillmentService";
-import { MESSAGES, VPN_PLANS, UserStep } from "../constants";
+import { MESSAGES, UserStep } from "../constants";
 import { Env } from "../index";
 import { createClient } from "@supabase/supabase-js";
 import { Database, PublicPaymentMethod, PublicPlan } from "../types";
@@ -792,6 +792,7 @@ export class BotManager {
                 paymentService: this.paymentService,
                 inventoryService: this.inventoryService,
                 vpnAccountService: this.vpnAccountService,
+                catalogService: this.catalogService,
                 bot: this.bot,
                 paymentId,
                 isTestMode: this.env.TEST_MODE === "true",
@@ -950,9 +951,9 @@ export class BotManager {
                         return;
                     }
                     const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
-                    const planInfo = VPN_PLANS[pendingPayment.plan];
+                    const planInfo = await this.catalogService.getPlanByInternalPlanKey(pendingPayment.plan);
                     await ctx.reply(
-                        `📋 پلن انتخابی: ${planInfo.name}\n💲 مبلغ قابل پرداخت: ${pendingPayment.amount.toLocaleString()} تومان`,
+                        `📋 پلن انتخابی: ${planInfo?.title ?? pendingPayment.plan}\n💲 مبلغ قابل پرداخت: ${pendingPayment.amount.toLocaleString()} تومان`,
                         { parse_mode: "MarkdownV2" }
                     );
                     await ctx.reply(

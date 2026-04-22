@@ -1,14 +1,13 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, AccountInventory } from '../types';
-import { VPN_PLANS, VpnPlanKey } from '../constants';
 
 export class InventoryService {
     constructor(private supabase: SupabaseClient<Database>) {}
 
     /**
-     * Pick oldest available row matching plan (plan_key NULL matches any).
+     * Pick oldest available row matching plan_key (NULL means any plan).
      */
-    async takeNextForPlan(plan: VpnPlanKey): Promise<AccountInventory | null> {
+    async takeNextForPlan(plan: string): Promise<AccountInventory | null> {
         const { data, error } = await this.supabase
             .from('account_inventory')
             .select('*')
@@ -61,7 +60,7 @@ export class InventoryService {
     async addRow(input: {
         username: string;
         password: string;
-        plan_key?: VpnPlanKey | null;
+        plan_key?: string | null;
         config_format?: string;
         config_text?: string | null;
         config_file_id?: string | null;
@@ -84,7 +83,7 @@ export class InventoryService {
         return data;
     }
 
-    async countAvailable(plan?: VpnPlanKey): Promise<number> {
+    async countAvailable(plan?: string): Promise<number> {
         let q = this.supabase
             .from('account_inventory')
             .select('id', { count: 'exact', head: true })
@@ -125,8 +124,7 @@ export class InventoryService {
         return data;
     }
 
-    planExpiryFromPurchase(plan: VpnPlanKey): Date {
-        const days = VPN_PLANS[plan].days;
+    planExpiryFromPurchase(days: number): Date {
         const d = new Date();
         d.setDate(d.getDate() + days);
         return d;

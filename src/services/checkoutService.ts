@@ -34,7 +34,9 @@ export class CheckoutService {
         const payment = await this.paymentService.createPayment(
             input.userId,
             input.plan.internalPlanKey,
-            input.method.id
+            input.plan.priceToman,
+            input.method.id,
+            input.method.kind
         );
 
         const adapter = this.railFactory.get(input.method.kind);

@@ -1,5 +1,4 @@
 import { SupabaseClient } from '@supabase/supabase-js';
-import { VPN_PLANS, VpnPlanKey } from '../constants';
 import type { Database, PaymentMethodKind, PublicPaymentMethod, PublicPlan } from '../types';
 
 type DbRecord = Record<string, unknown>;
@@ -36,10 +35,6 @@ function normalizeKind(kind: unknown): PaymentMethodKind {
     return 'other';
 }
 
-function resolveFallbackPlanByIndex(index: number): VpnPlanKey {
-    return index === 0 ? '1month' : '3months';
-}
-
 export class CatalogService {
     private readonly supabase: SupabaseClient<Database>;
     private dbBackedCatalogEnabled: boolean | null = null;
@@ -50,7 +45,6 @@ export class CatalogService {
 
     /**
      * Check whether database has catalog tables.
-     * No schema migration is required; if these tables do not exist we gracefully fallback.
      */
     private async hasDbCatalog(): Promise<boolean> {
         if (this.dbBackedCatalogEnabled !== null) return this.dbBackedCatalogEnabled;
@@ -67,9 +61,7 @@ export class CatalogService {
     }
 
     async listVisiblePlans(): Promise<PublicPlan[]> {
-        if (!(await this.hasDbCatalog())) {
-            return this.fallbackPlans();
-        }
+        if (!(await this.hasDbCatalog())) return [];
 
         const { data, error } = await this.supabase
             .from('product_types' as never)
@@ -77,18 +69,15 @@ export class CatalogService {
             .eq('is_catalog_visible', true)
             .order('id', { ascending: true });
 
-        if (error || !Array.isArray(data) || data.length === 0) {
-            console.warn('[CATALOG] DB-backed plan lookup failed, using fallback', error?.message);
-            return this.fallbackPlans();
-        }
+        if (error || !Array.isArray(data) || data.length === 0) return [];
 
         const rows = data as unknown as DbRecord[];
         const mapped = rows
-            .map((row, idx) => this.mapPlanRow(row, idx))
+            .map((row) => this.mapPlanRow(row))
             .filter((p): p is PublicPlan => Boolean(p))
             .filter((p) => p.isCatalogVisible);
 
-        return mapped.length ? mapped : this.fallbackPlans();
+        return mapped;
     }
 
     async getPlanBySlug(slug: string): Promise<PublicPlan | null> {
@@ -96,25 +85,25 @@ export class CatalogService {
         return plans.find((p) => p.slug === slug) ?? null;
     }
 
-    async getPlanByInternalPlanKey(planKey: VpnPlanKey): Promise<PublicPlan | null> {
+    async getPlanByInternalPlanKey(planKey: string): Promise<PublicPlan | null> {
         const plans = await this.listVisiblePlans();
         return plans.find((p) => p.internalPlanKey === planKey) ?? null;
     }
 
-    async getPaymentMethodsForPlan(plan: PublicPlan, fallbackCardNumber: string): Promise<PublicPaymentMethod[]> {
-        if (!(await this.hasDbCatalog()) || !plan.productTypeId) {
-            return [
-                {
-                    id: 1,
-                    productTypeId: plan.productTypeId ?? plan.id,
-                    kind: 'rial_card',
-                    label: 'کارت به کارت',
-                    payToValue: fallbackCardNumber,
-                    instructions: null,
-                    metadata: {},
-                },
-            ];
-        }
+    async getPlanMetricDaysByPlanKey(planKey: string): Promise<number | null> {
+        const plan = await this.getPlanByInternalPlanKey(planKey);
+        if (!plan) return null;
+        if (plan.unit !== 'days') return null;
+        const days = Number(plan.metricValue);
+        if (!Number.isFinite(days) || days <= 0) return null;
+        return days;
+    }
+
+    async getPaymentMethodsForPlan(
+        plan: PublicPlan,
+        fallbackCardNumber: string
+    ): Promise<PublicPaymentMethod[]> {
+        if (!(await this.hasDbCatalog()) || !plan.productTypeId) return [];
 
         const { data, error } = await this.supabase
             .from('product_type_payment_methods' as never)
@@ -123,33 +112,18 @@ export class CatalogService {
             .eq('is_active', true)
             .order('id', { ascending: true });
 
-        if (error || !Array.isArray(data) || data.length === 0) {
-            console.warn('[CATALOG] payment methods lookup failed, fallback to rial', error?.message);
-            return [
-                {
-                    id: 1,
-                    productTypeId: plan.productTypeId,
-                    kind: 'rial_card',
-                    label: 'کارت به کارت',
-                    payToValue: fallbackCardNumber,
-                    instructions: null,
-                    metadata: {},
-                },
-            ];
-        }
+        if (error || !Array.isArray(data) || data.length === 0) return [];
 
         const rows = data as unknown as DbRecord[];
         return rows.map((row) => this.mapPaymentMethodRow(row, plan.productTypeId!, fallbackCardNumber));
     }
 
-    private mapPlanRow(row: DbRecord, idx: number): PublicPlan | null {
+    private mapPlanRow(row: DbRecord): PublicPlan | null {
         const id = asNumber(row.id);
         if (!id) return null;
 
-        const fallbackPlan = resolveFallbackPlanByIndex(idx);
-        const mappedPlan = asString(row.plan_key) as VpnPlanKey | null;
-        const internalPlanKey: VpnPlanKey =
-            mappedPlan && VPN_PLANS[mappedPlan] ? mappedPlan : fallbackPlan;
+        const internalPlanKey = asString(row.plan_key) ?? asString(row.slug) ?? asString(row.code);
+        if (!internalPlanKey) return null;
 
         const slug =
             asString(row.slug) ??
@@ -160,19 +134,19 @@ export class CatalogService {
             asString(row.label_fa) ??
             asString(row.labelFa) ??
             asString(row.title) ??
-            VPN_PLANS[internalPlanKey].name;
+            slug;
         const unitValue = asString(row.unit)?.toLowerCase();
         const unit: 'days' | 'gb' = unitValue === 'gb' ? 'gb' : 'days';
         const metricValue =
             asNumber(row.metric_value) ??
             asNumber(row.metricValue) ??
             asNumber(row.days) ??
-            VPN_PLANS[internalPlanKey].days;
+            0;
         const priceToman =
             asNumber(row.price_toman) ??
             asNumber(row.priceToman) ??
             asNumber(row.price) ??
-            VPN_PLANS[internalPlanKey].price;
+            0;
         const isCatalogVisible = asBoolean(row.is_catalog_visible) ?? true;
         const rating = asNumber(row.rating);
         const guidelineText =
@@ -233,23 +207,5 @@ export class CatalogService {
                 chain: asString(row.chain),
             },
         };
-    }
-
-    private fallbackPlans(): PublicPlan[] {
-        return (Object.entries(VPN_PLANS) as [VpnPlanKey, { name: string; price: number; days: number }][]).map(
-            ([planKey, plan], index) => ({
-                id: index + 1,
-                slug: planKey,
-                title: plan.name,
-                unit: 'days',
-                metricValue: plan.days,
-                priceToman: plan.price,
-                rating: null,
-                guidelineText: null,
-                isCatalogVisible: true,
-                internalPlanKey: planKey,
-                productTypeId: index + 1,
-            })
-        );
     }
 }

@@ -1,4 +1,4 @@
-import { UserStep, VpnPlanKey } from './constants';
+import { UserStep } from './constants';
 
 export interface User {
     id: number;
@@ -6,7 +6,7 @@ export interface User {
     first_name: string;
     username?: string;
     step: UserStep;
-    selected_plan?: VpnPlanKey;
+    selected_plan?: string;
     amount?: number;
     vpn_username?: string;
     vpn_password?: string;
@@ -32,7 +32,7 @@ export interface Payment {
     id: number;
     user_id: number;
     amount: number;
-    plan: VpnPlanKey;
+    plan: string;
     card_last_digits?: string;
     transaction_id: string;
     status: string;
@@ -65,6 +65,23 @@ export interface AccountInventory {
     updated_at: string;
 }
 
+export interface ProductType {
+    id: number;
+    slug: string | null;
+    code: string | null;
+    plan_key: string | null;
+    title: string | null;
+    label_fa: string | null;
+    unit: string | null;
+    metric_value: number | null;
+    days: number | null;
+    price_toman: number | null;
+    price: number | null;
+    rating: number | null;
+    guideline_text: string | null;
+    is_catalog_visible: boolean | null;
+}
+
 export interface Database {
     public: {
         Tables: {
@@ -92,6 +109,11 @@ export interface Database {
                 Row: AccountInventory;
                 Insert: Omit<AccountInventory, 'id' | 'created_at' | 'updated_at'>;
                 Update: Partial<Omit<AccountInventory, 'id'>>;
+            };
+            product_types: {
+                Row: ProductType;
+                Insert: Partial<Omit<ProductType, 'id'>>;
+                Update: Partial<Omit<ProductType, 'id'>>;
             };
         };
     };
@@ -121,7 +143,7 @@ export interface PublicPlan {
      * Internal key required by current fulfillment pipeline.
      * Never shown to end-users.
      */
-    internalPlanKey: VpnPlanKey;
+    internalPlanKey: string;
     productTypeId?: number | null;
 }
 

@@ -4,7 +4,8 @@ import { UserService } from './userService';
 import { PaymentService } from './paymentService';
 import { InventoryService } from './inventoryService';
 import { VpnAccountService } from './vpnAccountService';
-import { UserStep, VPN_PLANS, VpnPlanKey } from '../constants';
+import { CatalogService } from './catalogService';
+import { UserStep } from '../constants';
 import { EXTENDED_MESSAGES } from '../extendedMessages';
 
 function escapeMdV2(s: string): string {
@@ -27,6 +28,7 @@ export async function fulfillPaymentAfterApproval(params: {
     paymentService: PaymentService;
     inventoryService: InventoryService;
     vpnAccountService: VpnAccountService;
+    catalogService: CatalogService;
     bot: Bot;
     paymentId: number;
     isTestMode: boolean;
@@ -35,6 +37,7 @@ export async function fulfillPaymentAfterApproval(params: {
         paymentService,
         inventoryService,
         vpnAccountService,
+        catalogService,
         userService,
         bot,
         paymentId,
@@ -45,7 +48,7 @@ export async function fulfillPaymentAfterApproval(params: {
     if (!payment) return { ok: false, error: 'payment_not_found' };
     if (payment.status !== 'PENDING') return { ok: false, error: 'not_pending' };
 
-    const plan = payment.plan as VpnPlanKey;
+    const plan = payment.plan;
     const inv = await inventoryService.takeNextForPlan(plan);
     if (!inv) {
         return { ok: false, error: 'no_inventory' };
@@ -57,7 +60,11 @@ export async function fulfillPaymentAfterApproval(params: {
     }
 
     const telegramId = dbUser.telegram_id;
-    const planDays = VPN_PLANS[plan].days;
+    const planData = await catalogService.getPlanByInternalPlanKey(plan);
+    const planDays = planData?.unit === 'days' ? Number(planData.metricValue) : 0;
+    if (!Number.isFinite(planDays) || planDays <= 0) {
+        return { ok: false, error: 'invalid_plan_days' };
+    }
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() + planDays);
     const expiryFa = expiryDate.toLocaleDateString('fa-IR');
@@ -75,6 +82,7 @@ export async function fulfillPaymentAfterApproval(params: {
                 inv.username,
                 inv.password,
                 plan,
+                planDays,
                 {
                     inventory_id: inv.id,
                     config_format: inv.config_format,
@@ -137,6 +145,7 @@ export async function deliverInventoryForCompletedPayment(params: {
     paymentService: PaymentService;
     inventoryService: InventoryService;
     vpnAccountService: VpnAccountService;
+    catalogService: CatalogService;
     bot: Bot;
     payment: Payment;
     isTestMode: boolean;
@@ -145,12 +154,13 @@ export async function deliverInventoryForCompletedPayment(params: {
         payment,
         inventoryService,
         vpnAccountService,
+        catalogService,
         userService,
         bot,
         isTestMode,
     } = params;
 
-    const plan = payment.plan as VpnPlanKey;
+    const plan = payment.plan;
     const inv = await inventoryService.takeNextForPlan(plan);
     if (!inv) return { ok: false, error: 'no_inventory' };
 
@@ -158,7 +168,9 @@ export async function deliverInventoryForCompletedPayment(params: {
     if (!dbUser) return { ok: false, error: 'user_not_found' };
 
     const telegramId = dbUser.telegram_id;
-    const planDays = VPN_PLANS[plan].days;
+    const planData = await catalogService.getPlanByInternalPlanKey(plan);
+    const planDays = planData?.unit === 'days' ? Number(planData.metricValue) : 0;
+    if (!Number.isFinite(planDays) || planDays <= 0) return { ok: false, error: 'invalid_plan_days' };
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() + planDays);
     const expiryFa = expiryDate.toLocaleDateString('fa-IR');
@@ -171,7 +183,7 @@ export async function deliverInventoryForCompletedPayment(params: {
 
     try {
         if (!isTestMode) {
-            await vpnAccountService.createVpnAccount(dbUser.id, inv.username, inv.password, plan, {
+            await vpnAccountService.createVpnAccount(dbUser.id, inv.username, inv.password, plan, planDays, {
                 inventory_id: inv.id,
                 config_format: inv.config_format,
             });

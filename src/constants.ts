@@ -18,27 +18,6 @@ export enum UserStep {
 }
 
 /**
- * Available VPN plan keys and durations
- */
-export type VpnPlanKey = '1month' | '3months';
-
-/**
- * VPN plans with prices and duration in days
- */
-export const VPN_PLANS: Record<VpnPlanKey, { name: string; price: number; days: number }> = {
-  '1month': {
-    name: '🔥 یک ماهه 💰',
-    price: 150000,
-    days: 30
-  },
-  '3months': {
-    name: '⚡️ سه ماهه 💸',
-    price: 400000,
-    days: 90
-  }
-};
-
-/**
  * Payment status types
  */
 export enum PaymentStatus {

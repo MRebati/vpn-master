@@ -6,7 +6,7 @@ import type {
     Payment,
     PaymentMethodKind,
 } from '../types';
-import { VpnPlanKey, VPN_PLANS, PaymentStatus } from '../constants';
+import { PaymentStatus } from '../constants';
 
 const METHOD_PREFIX: Record<PaymentMethodKind, string> = {
     rial_card: 'RIAL',
@@ -24,6 +24,7 @@ export class PaymentService {
     private cardNumber: string;
     private bot?: Bot;
     private channelId?: string;
+    private planPriceCache = new Map<string, number>();
 
     constructor(
         supabaseClient: SupabaseClient<Database>,
@@ -60,15 +61,15 @@ export class PaymentService {
      */
     async createPayment(
         userId: number,
-        plan: VpnPlanKey,
+        plan: string,
+        amount: number | null,
         paymentMethodId: number = 0,
         paymentMethodKind: PaymentMethodKind = 'rial_card'
     ): Promise<Payment> {
         try {
             console.log(`[PAYMENT_SERVICE] Creating payment record for user ${userId} with plan ${plan}`);
-            
-            const amount = VPN_PLANS[plan].price;
-            
+            const resolvedAmount = await this.resolveAmount(plan, amount);
+
             // Use the consistent method to generate transaction ID
             const transactionId = this.generateTransactionId(paymentMethodKind);
             console.log(`[PAYMENT_SERVICE] Generated transaction ID: ${transactionId}`);
@@ -77,7 +78,7 @@ export class PaymentService {
                 .from('payments')
                 .insert({
                     user_id: userId,
-                    amount,
+                    amount: resolvedAmount,
                     plan,
                     status: 'PENDING',
                     card_last_digits: 'proof',
@@ -92,7 +93,7 @@ export class PaymentService {
                 throw new Error(`Failed to create payment record: ${error.message}`);
             }
             
-            console.log(`[PAYMENT_SERVICE] Created payment ID: ${payment.id}, Transaction ID: ${payment.transaction_id} for user ${userId} with amount ${amount}`);
+            console.log(`[PAYMENT_SERVICE] Created payment ID: ${payment.id}, Transaction ID: ${payment.transaction_id} for user ${userId} with amount ${resolvedAmount}`);
             await this.tryPersistMethodMetadata(payment.id, paymentMethodId, paymentMethodKind);
             return payment;
         } catch (error) {
@@ -106,15 +107,16 @@ export class PaymentService {
      */
     async createManualCompletedPayment(
         userId: number,
-        plan: VpnPlanKey
+        plan: string,
+        amount: number | null
     ): Promise<Payment> {
-        const amount = VPN_PLANS[plan].price;
+        const resolvedAmount = await this.resolveAmount(plan, amount);
         const transactionId = `MANUAL-${METHOD_PREFIX.other}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const { data, error } = await this.supabase
             .from('payments')
             .insert({
                 user_id: userId,
-                amount,
+                amount: resolvedAmount,
                 plan,
                 status: 'COMPLETED',
                 card_last_digits: 'manual',
@@ -125,6 +127,39 @@ export class PaymentService {
             .single();
         if (error) throw new Error(`createManualCompletedPayment: ${error.message}`);
         return data;
+    }
+
+    private async resolveAmount(planKey: string, explicitAmount: number | null): Promise<number> {
+        if (typeof explicitAmount === 'number' && Number.isFinite(explicitAmount) && explicitAmount > 0) {
+            this.planPriceCache.set(planKey, explicitAmount);
+            return explicitAmount;
+        }
+        const cached = this.planPriceCache.get(planKey);
+        if (cached && cached > 0) return cached;
+
+        const { data, error } = await this.supabase
+            .from('product_types' as never)
+            .select('price_toman,price,plan_key,slug,code')
+            .or(`plan_key.eq.${planKey},slug.eq.${planKey},code.eq.${planKey}`)
+            .limit(1)
+            .maybeSingle();
+        if (error || !data) {
+            throw new Error(`No dynamic price found for plan "${planKey}"`);
+        }
+
+        const row = data as unknown as Record<string, unknown>;
+        const priceCandidate = row.price_toman ?? row.price;
+        const amount =
+            typeof priceCandidate === 'number'
+                ? priceCandidate
+                : typeof priceCandidate === 'string'
+                  ? Number(priceCandidate)
+                  : NaN;
+        if (!Number.isFinite(amount) || amount <= 0) {
+            throw new Error(`Invalid dynamic price for plan "${planKey}"`);
+        }
+        this.planPriceCache.set(planKey, amount);
+        return amount;
     }
 
     /**
