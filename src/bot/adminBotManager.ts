@@ -10,7 +10,23 @@ import { SettingsService } from '../services/settingsService';
 import { ProductTypeService } from '../services/productTypeService';
 import { deliverInventoryForCompletedPayment } from '../services/fulfillmentService';
 import { CatalogService } from '../services/catalogService';
-import { canActAsStaff } from '../utils/staffAccess';
+import {
+    canActAsStaff,
+    canUseStockPaste,
+    isStaffUserId,
+    resolveTelegramChannelChatId,
+} from '../utils/staffAccess';
+import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
+import { parseUserPassBlock } from '../utils/parseStockCredential';
+import { formatAvailableStockCard } from './stockCardMarkup';
+import {
+    buildAccessDeniedArticle,
+    buildInlineHelpArticle,
+    buildProductTypeArticles,
+    buildTemplateUserPassArticle,
+    filterProductTypesForInline,
+    normalizeInlineSearch,
+} from './adminInlineQuery';
 
 export type AdminBotContext = Context & { env: Env };
 
@@ -26,6 +42,7 @@ export class AdminBotManager {
     private vpnAccountService: VpnAccountService;
     private settingsService: SettingsService;
     private catalogService: CatalogService;
+    private productTypeService: ProductTypeService;
     private initialized = false;
 
     constructor(env: Env) {
@@ -53,6 +70,7 @@ export class AdminBotManager {
         this.vpnAccountService = new VpnAccountService(supabase);
         this.settingsService = new SettingsService(supabase);
         this.catalogService = new CatalogService(supabase);
+        this.productTypeService = new ProductTypeService(supabase);
 
         this.bot.use((ctx, next) => {
             ctx.env = env;
@@ -72,7 +90,7 @@ export class AdminBotManager {
     private formatPlanLabel(planKey: string | null): string {
         if (!planKey) return 'هر پلن';
         if (planKey === '1month' || planKey === '3months') {
-            return VPN_PLANS[planKey as VpnPlanKey].name;
+            return planKey === '1month' ? 'یک‌ماهه' : 'سه‌ماهه';
         }
         return planKey;
     }
@@ -182,17 +200,19 @@ export class AdminBotManager {
                     if (rest[3] === 'openvpn' || rest[3] === 'v2ray') format = rest[3];
                 }
             }
+            let productTypeId: number | null = null;
+            if (plan) {
+                const pt = await this.productTypeService.getBySlugAny(plan);
+                if (pt) productTypeId = pt.id;
+            }
 
             const row = await this.inventoryService.addRow({
                 username,
                 password,
-                plan_key,
-                product_type_id,
+                plan_key: plan,
+                product_type_id: productTypeId,
                 config_format: format,
             });
-            const ptRow = row.product_type_id
-                ? await this.productTypeService.getById(row.product_type_id)
-                : null;
             await ctx.reply(
                 `موجودی ثبت شد — شناسه: <code>${row.id}</code> · ${escapeHtml(await this.labelForInventoryRow(row))}`,
                 { parse_mode: PARSE_HTML }
@@ -255,6 +275,7 @@ export class AdminBotManager {
                 paymentService: this.paymentService,
                 inventoryService: this.inventoryService,
                 vpnAccountService: this.vpnAccountService,
+                productTypeService: this.productTypeService,
                 catalogService: this.catalogService,
                 bot: new Bot(this.env.BOT_TOKEN),
                 payment,
@@ -320,12 +341,7 @@ export class AdminBotManager {
             }
 
             const card = formatAvailableStockCard({ inv: row, productType: pt });
-            const sent = await ctx.reply(card, { parse_mode: PARSE_HTML });
-            await this.inventoryService.setStockMessageMeta(
-                row.id,
-                ctx.chat!.id,
-                sent.message_id
-            );
+            await ctx.reply(card, { parse_mode: PARSE_HTML });
 
             try {
                 await ctx.deleteMessage();
@@ -346,7 +362,7 @@ export class AdminBotManager {
             if (fromId === undefined) return;
 
             if (!isStaffUserId(fromId, this.env)) {
-                await ctx.answerInlineQuery([buildAccessDeniedArticle()], {
+                await ctx.answerInlineQuery([buildAccessDeniedArticle() as any], {
                     cache_time: 300,
                     is_personal: true,
                 });
@@ -357,7 +373,7 @@ export class AdminBotManager {
             const qn = normalizeInlineSearch(queryRaw);
 
             if (qn === 'راهنما' || qn === 'help' || qn === '؟') {
-                await ctx.answerInlineQuery([buildInlineHelpArticle()], {
+                await ctx.answerInlineQuery([buildInlineHelpArticle() as any], {
                     cache_time: 60,
                     is_personal: true,
                 });
@@ -366,7 +382,10 @@ export class AdminBotManager {
 
             if (qn === 'قالب' || qn === 'template' || qn === 'userpass') {
                 await ctx.answerInlineQuery(
-                    [buildTemplateUserPassArticle(), buildInlineHelpArticle()],
+                    [
+                        buildTemplateUserPassArticle() as any,
+                        buildInlineHelpArticle() as any,
+                    ],
                     { cache_time: 0, is_personal: true }
                 );
                 return;
@@ -380,7 +399,7 @@ export class AdminBotManager {
                 ...typeArticles,
                 buildTemplateUserPassArticle(),
                 buildInlineHelpArticle(),
-            ];
+            ] as any[];
 
             await ctx.answerInlineQuery(results, {
                 cache_time: 0,

@@ -4,11 +4,13 @@ import { UserService } from './userService';
 import { PaymentService } from './paymentService';
 import { InventoryService } from './inventoryService';
 import { VpnAccountService } from './vpnAccountService';
+import { ProductTypeService } from './productTypeService';
 import { CatalogService } from './catalogService';
 import { UserStep } from '../constants';
 import { EXTENDED_MESSAGES } from '../extendedMessages';
 import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
 import { formatSoldStockCard } from '../bot/stockCardMarkup';
+import type { Payment } from '../types';
 
 function accountCaption(username: string, password: string, expiryFa: string): string {
     return EXTENDED_MESSAGES.ACCOUNT_CREATED.replace(/\{USERNAME\}/g, escapeHtml(username))
@@ -38,17 +40,8 @@ async function computeAccountExpiry(
             return { expiryIso: d.toISOString(), expiryFa: label };
         }
     }
-    const plan = planSlug as VpnPlanKey;
-    if (VPN_PLANS[plan]) {
-        const d = new Date();
-        d.setDate(d.getDate() + VPN_PLANS[plan].days);
-        return {
-            expiryIso: d.toISOString(),
-            expiryFa: d.toLocaleDateString('fa-IR'),
-        };
-    }
     const d = new Date();
-    d.setFullYear(d.getFullYear() + 1);
+    d.setDate(d.getDate() + 30);
     return {
         expiryIso: d.toISOString(),
         expiryFa: d.toLocaleDateString('fa-IR'),
@@ -98,6 +91,7 @@ export async function fulfillPaymentAfterApproval(params: {
     paymentService: PaymentService;
     inventoryService: InventoryService;
     vpnAccountService: VpnAccountService;
+    productTypeService: ProductTypeService;
     catalogService: CatalogService;
     bot: Bot;
     paymentId: number;
@@ -108,6 +102,7 @@ export async function fulfillPaymentAfterApproval(params: {
         paymentService,
         inventoryService,
         vpnAccountService,
+        productTypeService,
         catalogService,
         userService,
         bot,
@@ -158,7 +153,7 @@ export async function fulfillPaymentAfterApproval(params: {
                 {
                     inventory_id: inv.id,
                     config_format: inv.config_format,
-                    expiryDateIso: expiryIso,
+                    // VpnAccountService computes expiry from planDurationDays.
                 }
             );
         }
@@ -226,6 +221,7 @@ export async function deliverInventoryForCompletedPayment(params: {
     paymentService: PaymentService;
     inventoryService: InventoryService;
     vpnAccountService: VpnAccountService;
+    productTypeService: ProductTypeService;
     catalogService: CatalogService;
     bot: Bot;
     payment: Payment;
@@ -270,7 +266,7 @@ export async function deliverInventoryForCompletedPayment(params: {
             await vpnAccountService.createVpnAccount(dbUser.id, inv.username, inv.password, plan, planDays, {
                 inventory_id: inv.id,
                 config_format: inv.config_format,
-                expiryDateIso: expiryIso,
+                // VpnAccountService computes expiry from planDurationDays.
             });
         }
     } catch (e) {

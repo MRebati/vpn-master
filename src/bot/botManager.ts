@@ -14,6 +14,7 @@ import { canActAsStaff } from "../utils/staffAccess";
 import { CatalogService } from "../services/catalogService";
 import { CheckoutService } from "../services/checkoutService";
 import { PaymentRailFactory } from "../services/paymentRails";
+import { escapeHtml, PARSE_HTML } from "../utils/telegramHtml";
 
 // Bot context type with environment
 export type BotContext = Context & { env: Env };
@@ -859,6 +860,7 @@ export class BotManager {
                 paymentService: this.paymentService,
                 inventoryService: this.inventoryService,
                 vpnAccountService: this.vpnAccountService,
+                productTypeService: this.inventoryService.getProductTypes(),
                 catalogService: this.catalogService,
                 bot: this.bot,
                 paymentId,

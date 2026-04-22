@@ -7,6 +7,7 @@ import type {
     PaymentMethodKind,
 } from '../types';
 import { PaymentStatus } from '../constants';
+import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
 
 const METHOD_PREFIX: Record<PaymentMethodKind, string> = {
     rial_card: 'RIAL',
@@ -38,17 +39,8 @@ export class PaymentService {
         this.cardNumber = cardNumber;
         this.bot = bot;
         this.channelId = channelId;
-        this.productTypes = new ProductTypeService(supabaseClient);
 
         console.log(`[PAYMENT_SERVICE] Initialized with admin ID: ${adminUserId}, channel ID: ${channelId || 'not set'}`);
-    }
-
-    private async resolvePlanPriceToman(planSlug: string): Promise<number> {
-        const pt = await this.productTypes.getActiveBySlug(planSlug);
-        if (pt?.price_toman != null) return pt.price_toman;
-        const legacy = VPN_PLANS[planSlug as VpnPlanKey];
-        if (legacy) return legacy.price;
-        throw new Error(`Unknown plan slug: ${planSlug}`);
     }
 
     /**

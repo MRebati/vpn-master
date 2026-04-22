@@ -9,7 +9,7 @@ type InlineArticle = {
     description?: string;
     input_message_content: {
         message_text: string;
-        parse_mode?: string;
+        parse_mode?: 'HTML' | 'MarkdownV2' | 'Markdown';
     };
 };
 

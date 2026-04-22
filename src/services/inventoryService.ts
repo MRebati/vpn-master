@@ -1,5 +1,6 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, AccountInventory } from '../types';
+import { ProductTypeService } from './productTypeService';
 
 export class InventoryService {
     private productTypes: ProductTypeService;
@@ -66,6 +67,7 @@ export class InventoryService {
         username: string;
         password: string;
         plan_key?: string | null;
+        product_type_id?: number | null;
         config_format?: string;
         config_text?: string | null;
         config_file_id?: string | null;
@@ -140,6 +142,22 @@ export class InventoryService {
             .maybeSingle();
         if (error) throw new Error(error.message);
         return data;
+    }
+
+    async setStockMessageMeta(
+        inventoryId: number,
+        chatId: number,
+        messageId: number
+    ): Promise<void> {
+        const { error } = await this.supabase
+            .from('account_inventory')
+            .update({
+                stock_chat_id: chatId,
+                stock_message_id: messageId,
+                updated_at: new Date().toISOString(),
+            })
+            .eq('id', inventoryId);
+        if (error) throw new Error(error.message);
     }
 
     planExpiryFromPurchase(days: number): Date {
