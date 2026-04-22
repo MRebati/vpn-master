@@ -919,7 +919,7 @@ export class BotManager {
             } else {
                 const railNote = method.instructions ? `\n\n${method.instructions}` : "";
                 await ctx.reply(`${checkout.instruction.instructionText}${railNote}`, {
-                    parse_mode: "MarkdownV2",
+                    parse_mode: PARSE_HTML,
                 });
                 if (checkout.instruction.deepLink) {
                     await ctx.reply(`🔗 لینک پرداخت:\n${checkout.instruction.deepLink}`);
@@ -1247,8 +1247,7 @@ export class BotManager {
                     const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
                     const planInfo = await this.catalogService.getPlanByInternalPlanKey(pendingPayment.plan);
                     await ctx.reply(
-                        `📋 پلن انتخابی: ${planInfo?.title ?? pendingPayment.plan}\n💲 مبلغ قابل پرداخت: ${pendingPayment.amount.toLocaleString()} تومان`,
-                        { parse_mode: "MarkdownV2" }
+                        `📋 پلن انتخابی: ${planInfo?.title ?? pendingPayment.plan}\n💲 مبلغ قابل پرداخت: ${pendingPayment.amount.toLocaleString()} تومان`
                     );
                     await ctx.reply(
                         "⚠️ فرآیند خرید به‌روز شد؛ لطفاً پس از واریز، <b>عکس رسید</b> یا <b>اسکرین‌شات پیامک</b> را ارسال کنید.",
@@ -1260,7 +1259,7 @@ export class BotManager {
                         pendingPayment.amount,
                         card
                     );
-                    await ctx.reply(instructions, { parse_mode: "MarkdownV2" });
+                    await ctx.reply(instructions, { parse_mode: PARSE_HTML });
                 } else if (
                     user.step === UserStep.AWAITING_PAYMENT ||
                     user.step === UserStep.AWAITING_PAYMENT_PROOF
