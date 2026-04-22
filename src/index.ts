@@ -27,6 +27,11 @@ export interface Env {
     CARD_NUMBER: string;
     TEST_MODE?: string; // "true" to enable test mode
     CHANNEL_ID?: string; // Channel ID for notifications
+    /**
+     * Optional behavior override when sales toggle cannot be read from DB.
+     * Default is fail-open (allow sales) to preserve current live behavior.
+     */
+    SALES_FAIL_CLOSED?: string; // "true" => block purchases on settings read failures
 }
 
 // Helper functions for generating VPN credentials

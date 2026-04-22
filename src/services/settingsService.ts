@@ -3,12 +3,29 @@ import type { Database } from '../types';
 
 const KEY_CARD = 'card_number';
 const KEY_SUPPORT_CHANNEL = 'support_channel';
+const KEY_SALES_ENABLED = 'sales_enabled';
+const SALES_TRUTHY = new Set(['true', '1', 'yes', 'on', 'enabled']);
+
+type SettingsServiceOptions = {
+    salesCacheTtlMs?: number;
+    salesFailClosed?: boolean;
+};
 
 /**
  * Key/value settings stored in Supabase (editable via admin bot).
  */
 export class SettingsService {
-    constructor(private supabase: SupabaseClient<Database>) {}
+    private readonly salesCacheTtlMs: number;
+    private readonly salesFailClosed: boolean;
+    private salesEnabledCache: { value: boolean; expiresAt: number } | null = null;
+
+    constructor(
+        private supabase: SupabaseClient<Database>,
+        options?: SettingsServiceOptions
+    ) {
+        this.salesCacheTtlMs = options?.salesCacheTtlMs ?? 15_000;
+        this.salesFailClosed = options?.salesFailClosed ?? false;
+    }
 
     async get(key: string): Promise<string | null> {
         const { data, error } = await this.supabase
@@ -47,5 +64,61 @@ export class SettingsService {
 
     async setSupportChannel(value: string): Promise<void> {
         await this.set(KEY_SUPPORT_CHANNEL, value.trim());
+    }
+
+    /**
+     * Global sales toggle accessor.
+     * - Missing key => enabled (true)
+     * - DB errors => fail-open by default to preserve current live behavior
+     *   unless explicitly configured with `salesFailClosed`.
+     */
+    async isSalesEnabled(): Promise<boolean> {
+        const now = Date.now();
+        if (this.salesEnabledCache && this.salesEnabledCache.expiresAt > now) {
+            return this.salesEnabledCache.value;
+        }
+
+        try {
+            const { data, error } = await this.supabase
+                .from('app_settings')
+                .select('value')
+                .eq('key', KEY_SALES_ENABLED)
+                .maybeSingle();
+
+            if (error) {
+                throw error;
+            }
+
+            if (!data || data.value == null) {
+                this.salesEnabledCache = {
+                    value: true,
+                    expiresAt: now + this.salesCacheTtlMs,
+                };
+                return true;
+            }
+
+            const normalized = String(data.value).trim().toLowerCase();
+            const enabled = SALES_TRUTHY.has(normalized);
+            this.salesEnabledCache = {
+                value: enabled,
+                expiresAt: now + this.salesCacheTtlMs,
+            };
+            return enabled;
+        } catch (error) {
+            const fallback = this.salesFailClosed ? false : true;
+            console.error(
+                `[SETTINGS] isSalesEnabled failed, using fallback=${fallback ? 'enabled' : 'disabled'}`,
+                error
+            );
+            this.salesEnabledCache = {
+                value: fallback,
+                expiresAt: now + this.salesCacheTtlMs,
+            };
+            return fallback;
+        }
+    }
+
+    clearSalesEnabledCache(): void {
+        this.salesEnabledCache = null;
     }
 }

@@ -41,6 +41,39 @@ export class BotManager {
         }
     >();
 
+    private getSalesPausedMessage(): string {
+        return (
+            `${MESSAGES.SALES_PAUSED}\n\n` +
+            `${MESSAGES.SALES_RETRY_LATER}\n` +
+            `${MESSAGES.SALES_SUPPORT_HINT}`
+        );
+    }
+
+    private async guardSalesEnabled(
+        ctx: BotContext,
+        entryPoint: string,
+        userId?: number,
+        userStep?: string
+    ): Promise<boolean> {
+        const enabled = await this.settingsService.isSalesEnabled();
+        if (enabled) return true;
+        const uid = userId ?? ctx.from?.id;
+        console.log(
+            `[SALES_GUARD] blocked purchase attempt entry=${entryPoint} user=${uid ?? 'unknown'} step=${userStep ?? 'unknown'}`
+        );
+        await ctx.reply(this.getSalesPausedMessage(), { parse_mode: "MarkdownV2" });
+        return false;
+    }
+
+    async ensureSalesEnabledForPurchase(
+        ctx: BotContext,
+        entryPoint: string,
+        userId?: number,
+        userStep?: string
+    ): Promise<boolean> {
+        return this.guardSalesEnabled(ctx, entryPoint, userId, userStep);
+    }
+
     constructor(env: Env) {
         try {
             console.log(`[BOT_INIT] Initializing bot with token: ${env.BOT_TOKEN.substring(0, 8)}...`);
@@ -90,7 +123,9 @@ export class BotManager {
                 env.CHANNEL_ID // Pass the channel ID
             );
             this.vpnAccountService = new VpnAccountService(supabase);
-            this.settingsService = new SettingsService(supabase);
+            this.settingsService = new SettingsService(supabase, {
+                salesFailClosed: env.SALES_FAIL_CLOSED === 'true',
+            });
             this.inventoryService = new InventoryService(supabase);
             this.catalogService = new CatalogService(supabase);
             this.railFactory = new PaymentRailFactory();
@@ -311,12 +346,14 @@ export class BotManager {
         // Plans menu
         const plansMenu = new Menu<BotContext>("plans-menu")
             .text("🔄 نمایش پلن‌های فعال", async (ctx) => {
+                if (!(await this.ensureSalesEnabledForPurchase(ctx, "show-plans-menu"))) return;
                 await this.showPlanSelection(ctx);
             });
 
         // Main menu
         const mainMenu = new Menu<BotContext>("main-menu")
             .text("🛍 خرید اشتراک", async (ctx) => {
+                if (!(await this.ensureSalesEnabledForPurchase(ctx, "purchase-main-menu"))) return;
                 const user = await this.userService.getOrCreateUser(
                     ctx.from.id,
                     ctx.from.first_name,
@@ -327,6 +364,7 @@ export class BotManager {
             })
             .row()
             .text("🔄 تمدید اشتراک", async (ctx) => {
+                if (!(await this.ensureSalesEnabledForPurchase(ctx, "renew-main-menu"))) return;
                 const user = await this.userService.getOrCreateUser(
                     ctx.from.id,
                     ctx.from.first_name,
@@ -736,6 +774,7 @@ export class BotManager {
     private registerCallbackHandlers() {
         this.bot.callbackQuery(/^plan:(.+)$/, async (ctx) => {
             await ctx.answerCallbackQuery();
+            if (!(await this.ensureSalesEnabledForPurchase(ctx, 'plan-callback'))) return;
             const rawSlug = ctx.match![1];
             const slug = decodeURIComponent(rawSlug);
             await this.handlePlanSelection(ctx, slug);
@@ -743,6 +782,7 @@ export class BotManager {
 
         this.bot.callbackQuery(/^select_method:(\d+)$/, async (ctx) => {
             await ctx.answerCallbackQuery();
+            if (!(await this.ensureSalesEnabledForPurchase(ctx, 'payment-method-callback'))) return;
             const methodId = Number(ctx.match![1]);
             const session = this.paymentMethodContextByTelegramId.get(ctx.from.id);
             if (!session || Date.now() - session.createdAt > 20 * 60_000) {
@@ -845,6 +885,16 @@ export class BotManager {
                 ) {
                     return;
                 }
+                if (
+                    !(await this.ensureSalesEnabledForPurchase(
+                        ctx,
+                        "proof-submission",
+                        user.id,
+                        user.step
+                    ))
+                ) {
+                    return;
+                }
 
                 const pending = await this.paymentService.getLatestPendingPayment(user.id);
                 if (!pending) return;
@@ -931,8 +981,28 @@ export class BotManager {
                         parse_mode: "MarkdownV2"
                     });
                 } else if (user.step === UserStep.SELECTING_PLAN) {
+                    if (
+                        !(await this.ensureSalesEnabledForPurchase(
+                            ctx,
+                            "message-selecting-plan",
+                            user.id,
+                            user.step
+                        ))
+                    ) {
+                        return;
+                    }
                     await this.showPlanSelection(ctx);
                 } else if (user.step === UserStep.AWAITING_PAYMENT_METHOD) {
+                    if (
+                        !(await this.ensureSalesEnabledForPurchase(
+                            ctx,
+                            "message-awaiting-payment-method",
+                            user.id,
+                            user.step
+                        ))
+                    ) {
+                        return;
+                    }
                     const session = this.paymentMethodContextByTelegramId.get(ctx.from.id);
                     if (!session || Date.now() - session.createdAt > 20 * 60_000) {
                         await ctx.reply("برای ادامه خرید دوباره یک پلن انتخاب کنید.");
@@ -944,6 +1014,16 @@ export class BotManager {
                     user.step === UserStep.AWAITING_USERNAME ||
                     user.step === UserStep.AWAITING_PASSWORD
                 ) {
+                    if (
+                        !(await this.ensureSalesEnabledForPurchase(
+                            ctx,
+                            "message-legacy-awaiting-proof",
+                            user.id,
+                            user.step
+                        ))
+                    ) {
+                        return;
+                    }
                     await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT_PROOF);
                     const pendingPayment = await this.paymentService.getLatestPendingPayment(user.id);
                     if (!pendingPayment) {
