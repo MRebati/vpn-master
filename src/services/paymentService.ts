@@ -51,7 +51,7 @@ export class PaymentService {
         const methodPrefix = METHOD_PREFIX[methodKind] ?? METHOD_PREFIX.other;
         const prefix = `TXN-${methodPrefix}`;
         const timestamp = Date.now().toString().substring(7, 13); // Last 6 digits of timestamp
-        const randomStr = Math.random().toString(36).substring(2, 5); // Random alphanumeric (3 chars)
+        const randomStr = Math.random().toString(36).substring(2, 5).toUpperCase(); // Random alphanumeric (3 chars)
         return `${prefix}-${timestamp}-${randomStr}`;
     }
 
@@ -112,7 +112,7 @@ export class PaymentService {
         amount: number | null
     ): Promise<Payment> {
         const resolvedAmount = await this.resolveAmount(plan, amount);
-        const transactionId = `MANUAL-${METHOD_PREFIX.other}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const transactionId = `MANUAL-${METHOD_PREFIX.other}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
         const { data, error } = await this.supabase
             .from('payments')
             .insert({
