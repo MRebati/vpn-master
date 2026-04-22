@@ -24,7 +24,7 @@ describe('PaymentService', () => {
             id: 1,
             user_id: 1,
             amount: 150000,
-            plan: '1month',
+            plan: 'basic-30d',
             card_last_digits: 'proof',
             status: 'PENDING',
             transaction_id: 'TXN-1',
@@ -37,7 +37,7 @@ describe('PaymentService', () => {
             select: vi.fn().mockReturnValue({ single: mockSingle }),
         });
 
-        const result = await paymentService.createPayment(1, '1month');
+        const result = await paymentService.createPayment(1, 'basic-30d', 150000);
         expect(result.id).toBe(1);
         expect(mockSupabase.from).toHaveBeenCalledWith('payments');
     });
@@ -47,7 +47,7 @@ describe('PaymentService', () => {
             id: 1,
             user_id: 1,
             amount: 150000,
-            plan: '1month',
+            plan: 'basic-30d',
             card_last_digits: 'proof',
             status: 'COMPLETED',
             transaction_id: 'TXN-1',

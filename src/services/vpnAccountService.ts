@@ -1,6 +1,5 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { Database, VpnAccount } from '../types';
-import { VpnPlanKey, VPN_PLANS } from '../constants';
 import crypto from 'crypto';
 
 /**
@@ -20,15 +19,15 @@ export class VpnAccountService {
         userId: number,
         username: string,
         password: string,
-        plan: VpnPlanKey,
+        plan: string,
+        planDurationDays: number,
         opts?: { inventory_id?: number | null; config_format?: string | null }
     ): Promise<VpnAccount> {
         try {
             console.log(`[VPN_SERVICE] Creating VPN account for user ${userId} with plan ${plan}`);
 
-            const planDuration = VPN_PLANS[plan].days;
             const expiryDate = new Date();
-            expiryDate.setDate(expiryDate.getDate() + planDuration);
+            expiryDate.setDate(expiryDate.getDate() + planDurationDays);
 
             const { data: account, error } = await this.supabase
                 .from('vpn_accounts')
@@ -129,7 +128,7 @@ export class VpnAccountService {
     /**
      * Update the expiry date of a VPN account based on a plan
      */
-    async extendVpnAccount(accountId: number, plan: VpnPlanKey): Promise<void> {
+    async extendVpnAccount(accountId: number, plan: string, planDurationDays: number): Promise<void> {
         try {
             console.log(`[VPN_SERVICE] Extending VPN account ${accountId} with plan ${plan}`);
 
@@ -144,12 +143,11 @@ export class VpnAccountService {
                 throw new Error(`VPN account with ID ${accountId} not found`);
             }
 
-            const planDuration = VPN_PLANS[plan].days;
             const currentExpiry = new Date(currentAccount.expiry_date);
             const now = new Date();
 
             const baseDate = currentExpiry > now ? currentExpiry : now;
-            baseDate.setDate(baseDate.getDate() + planDuration);
+            baseDate.setDate(baseDate.getDate() + planDurationDays);
 
             const { error: updateError } = await this.supabase
                 .from('vpn_accounts')

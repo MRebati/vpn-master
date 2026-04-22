@@ -5,6 +5,8 @@ export enum UserStep {
   START = 'start',
   IDLE = 'idle',
   SELECTING_PLAN = 'selecting_plan',
+  AWAITING_PAYMENT_METHOD = 'awaiting_payment_method',
+  AWAITING_PAYMENT_PROOF = 'awaiting_payment_proof',
   AWAITING_PAYMENT = 'awaiting_payment',
   /** @deprecated legacy — migrated to AWAITING_PAYMENT */
   AWAITING_USERNAME = 'awaiting_username',
@@ -14,27 +16,6 @@ export enum UserStep {
   CONFIRMING_PAYMENT = 'confirming_payment',
   PAYMENT_COMPLETED = 'payment_completed'
 }
-
-/**
- * Available VPN plan keys and durations
- */
-export type VpnPlanKey = '1month' | '3months';
-
-/**
- * VPN plans with prices and duration in days
- */
-export const VPN_PLANS: Record<VpnPlanKey, { name: string; price: number; days: number }> = {
-  '1month': {
-    name: '🔥 یک ماهه 💰',
-    price: 150000,
-    days: 30
-  },
-  '3months': {
-    name: '⚡️ سه ماهه 💸',
-    price: 400000,
-    days: 90
-  }
-};
 
 /**
  * Payment status types

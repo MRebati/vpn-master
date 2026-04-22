@@ -8,7 +8,7 @@ import { InventoryService } from '../services/inventoryService';
 import { VpnAccountService } from '../services/vpnAccountService';
 import { SettingsService } from '../services/settingsService';
 import { deliverInventoryForCompletedPayment } from '../services/fulfillmentService';
-import { VPN_PLANS, VpnPlanKey } from '../constants';
+import { CatalogService } from '../services/catalogService';
 import { canActAsStaff } from '../utils/staffAccess';
 
 export type AdminBotContext = Context & { env: Env };
@@ -27,6 +27,7 @@ export class AdminBotManager {
     private inventoryService: InventoryService;
     private vpnAccountService: VpnAccountService;
     private settingsService: SettingsService;
+    private catalogService: CatalogService;
     private initialized = false;
 
     constructor(env: Env) {
@@ -54,6 +55,7 @@ export class AdminBotManager {
         this.inventoryService = new InventoryService(supabase);
         this.vpnAccountService = new VpnAccountService(supabase);
         this.settingsService = new SettingsService(supabase);
+        this.catalogService = new CatalogService(supabase);
 
         this.bot.use((ctx, next) => {
             ctx.env = env;
@@ -75,9 +77,9 @@ export class AdminBotManager {
                     '(Use here or in STAFF_CHANNEL_ID group; DMs need ADMIN/STAFF_USER_IDS.)',
                     '/setcard <number> — bank card shown to customers',
                     '/setsupport <text> — support message for customers',
-                    '/addstock <user> <pass> [1month|3months] [openvpn|v2ray]',
+                    '/addstock <user> <pass> [plan_key] [openvpn|v2ray]',
                     '/stock — available counts',
-                    '/deliver <telegram_id> <1month|3months> — manual sale (uses inventory)',
+                    '/deliver <telegram_id> <plan_key> — manual sale (uses inventory)',
                 ].join('\n')
             );
         });
@@ -112,19 +114,21 @@ export class AdminBotManager {
             const rest = text.replace(/^\/addstock\s*/i, '').trim().split(/\s+/);
             if (rest.length < 2) {
                 await ctx.reply(
-                    'Usage: /addstock <username> <password> [1month|3months] [openvpn|v2ray]'
+                    'Usage: /addstock <username> <password> [plan_key] [openvpn|v2ray]'
                 );
                 return;
             }
             const username = rest[0];
             const password = rest[1];
-            let plan: VpnPlanKey | null = null;
+            let plan: string | null = null;
             let format = 'openvpn';
-            if (rest[2] === '1month' || rest[2] === '3months') {
-                plan = rest[2] as VpnPlanKey;
-                if (rest[3] === 'openvpn' || rest[3] === 'v2ray') format = rest[3];
-            } else if (rest[2] === 'openvpn' || rest[2] === 'v2ray') {
-                format = rest[2];
+            if (rest[2]) {
+                if (rest[2] === 'openvpn' || rest[2] === 'v2ray') {
+                    format = rest[2];
+                } else {
+                    plan = rest[2];
+                    if (rest[3] === 'openvpn' || rest[3] === 'v2ray') format = rest[3];
+                }
             }
             const row = await this.inventoryService.addRow({
                 username,
@@ -137,14 +141,8 @@ export class AdminBotManager {
 
         this.bot.command('stock', async (ctx) => {
             if (!canActAsStaff(ctx, this.env)) return;
-            const a1 = await this.inventoryService.countAvailable('1month');
-            const a3 = await this.inventoryService.countAvailable('3months');
             const any = await this.inventoryService.countAvailable();
-            await ctx.reply(
-                `Available (any plan match): ${any}\n` +
-                    `1month-eligible: ${a1}\n` +
-                    `3months-eligible: ${a3}`
-            );
+            await ctx.reply(`Available (any plan match): ${any}`);
         });
 
         this.bot.command('deliver', async (ctx) => {
@@ -152,13 +150,14 @@ export class AdminBotManager {
             const text = ctx.message?.text ?? '';
             const rest = text.replace(/^\/deliver\s*/i, '').trim().split(/\s+/);
             if (rest.length < 2) {
-                await ctx.reply('Usage: /deliver <telegram_user_id> <1month|3months>');
+                await ctx.reply('Usage: /deliver <telegram_user_id> <plan_key>');
                 return;
             }
             const tgId = Number(rest[0]);
-            const plan = rest[1] as VpnPlanKey;
-            if (!VPN_PLANS[plan]) {
-                await ctx.reply('Plan must be 1month or 3months');
+            const plan = rest[1];
+            const planData = await this.catalogService.getPlanByInternalPlanKey(plan);
+            if (!planData) {
+                await ctx.reply('Unknown plan key.');
                 return;
             }
             const user = await this.userService.getOrCreateUser(
@@ -168,7 +167,8 @@ export class AdminBotManager {
             );
             const payment = await this.paymentService.createManualCompletedPayment(
                 user.id,
-                plan
+                plan,
+                planData.priceToman
             );
             const isTest = this.env.TEST_MODE === 'true';
             const r = await deliverInventoryForCompletedPayment({
@@ -176,6 +176,7 @@ export class AdminBotManager {
                 paymentService: this.paymentService,
                 inventoryService: this.inventoryService,
                 vpnAccountService: this.vpnAccountService,
+                catalogService: this.catalogService,
                 bot: new Bot(this.env.BOT_TOKEN),
                 payment,
                 isTestMode: isTest,
