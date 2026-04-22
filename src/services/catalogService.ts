@@ -36,6 +36,59 @@ function normalizeKind(kind: unknown): PaymentMethodKind {
     return 'other';
 }
 
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+    if (!value) return null;
+    if (typeof value === 'object' && !Array.isArray(value)) {
+        return value as Record<string, unknown>;
+    }
+    if (typeof value === 'string') {
+        try {
+            const parsed = JSON.parse(value) as unknown;
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                return parsed as Record<string, unknown>;
+            }
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+function parseCardList(raw: string | null): string[] {
+    if (!raw) return [];
+    const normalized = raw.trim();
+    if (!normalized) return [];
+
+    const byNewline = normalized
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    if (byNewline.length > 1) return byNewline;
+
+    const jsonLike = parseJsonObject(normalized);
+    if (jsonLike) {
+        const value = jsonLike.cardNumbers ?? jsonLike.cards ?? jsonLike.list;
+        if (Array.isArray(value)) {
+            return value
+                .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+                .filter(Boolean);
+        }
+    }
+
+    return [normalized];
+}
+
+function computeStableRotationIndex(seed: string, size: number): number {
+    if (size <= 1) return 0;
+    let hash = 2166136261;
+    for (let i = 0; i < seed.length; i++) {
+        hash ^= seed.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    const positive = hash >>> 0;
+    return positive % size;
+}
+
 export class CatalogService {
     private readonly supabase: SupabaseClient<Database>;
     private catalogSource: CatalogSource | null = null;
@@ -165,21 +218,16 @@ export class CatalogService {
     }
 
     async getPaymentMethodsForPlan(
-        plan: PublicPlan,
-        fallbackCardNumber: string
+        plan: PublicPlan
     ): Promise<PublicPaymentMethod[]> {
         const source = await this.detectCatalogSource();
-        if (source === 'none') {
-            return [this.defaultRialMethod(plan.productTypeId ?? plan.id, fallbackCardNumber)];
-        }
-        if (!plan.productTypeId) {
-            return [this.defaultRialMethod(plan.productTypeId ?? plan.id, fallbackCardNumber)];
-        }
+        const productTypeId = plan.productTypeId ?? plan.id;
+        if (source === 'none' || !productTypeId) return [];
 
         const methodsBaseQuery = this.supabase
             .from('product_type_payment_methods' as never)
             .select('*')
-            .eq('product_type_id', plan.productTypeId)
+            .eq('product_type_id', productTypeId)
             .eq('is_active', true);
         const methodsOrderedQuery =
             typeof (methodsBaseQuery as { order?: (...args: unknown[]) => unknown }).order ===
@@ -192,18 +240,17 @@ export class CatalogService {
         const data = methodsResult.data;
         const error = methodsResult.error;
 
-        if (error || !Array.isArray(data) || data.length === 0) {
-            // Keep purchase flow functional if rails table is empty/unavailable.
-            // This still allows supplier-specific cards when table rows exist.
-            return [this.defaultRialMethod(plan.productTypeId, fallbackCardNumber)];
+        if (!error && Array.isArray(data) && data.length > 0) {
+            const rows = data as unknown as DbRecord[];
+            const mapped = rows
+                .map((row) => this.mapPaymentMethodRow(row, productTypeId))
+                .filter((m): m is PublicPaymentMethod => Boolean(m));
+            const rotated = this.rotateRialMethods(mapped, plan);
+            if (rotated.length > 0) return rotated;
         }
 
-        const rows = data as unknown as DbRecord[];
-        const mapped = rows
-            .map((row) => this.mapPaymentMethodRow(row, plan.productTypeId!, fallbackCardNumber))
-            .filter((m): m is PublicPaymentMethod => Boolean(m));
-        if (mapped.length > 0) return mapped;
-        return [this.defaultRialMethod(plan.productTypeId, fallbackCardNumber)];
+        const fallback = await this.loadDbFallbackMethodsForPlan(plan, productTypeId);
+        return this.rotateRialMethods(fallback, plan);
     }
 
     private mapPlanRow(row: DbRecord): PublicPlan | null {
@@ -290,8 +337,7 @@ export class CatalogService {
 
     private mapPaymentMethodRow(
         row: DbRecord,
-        productTypeId: number,
-        fallbackCardNumber: string
+        productTypeId: number
     ): PublicPaymentMethod | null {
         const isActive = asBoolean(row.is_active);
         if (isActive === false) return null;
@@ -311,7 +357,7 @@ export class CatalogService {
             asString(row.pay_to_value) ??
             asString(row.payto) ??
             asString(row.destination) ??
-            (kind === 'rial_card' ? fallbackCardNumber : null);
+            null;
         const instructions = asString(row.instructions) ?? null;
 
         return {
@@ -324,22 +370,139 @@ export class CatalogService {
             metadata: {
                 network: asString(row.network),
                 chain: asString(row.chain),
+                payee: asString(row.payee),
+                supplierPaymentMethodId:
+                    asNumber(row.supplier_payment_method_id) ??
+                    asNumber(row.payment_method_id),
+                supplierId: asNumber(row.supplier_id),
             },
         };
     }
 
-    private defaultRialMethod(
-        productTypeId: number,
-        fallbackCardNumber: string
-    ): PublicPaymentMethod {
-        return {
-            id: productTypeId * 1000 + 1,
-            productTypeId,
-            kind: 'rial_card',
-            label: 'کارت به کارت',
-            payToValue: fallbackCardNumber,
-            instructions: null,
-            metadata: {},
-        };
+    private async loadDbFallbackMethodsForPlan(
+        plan: PublicPlan,
+        productTypeId: number
+    ): Promise<PublicPaymentMethod[]> {
+        const source = await this.detectCatalogSource();
+        if (source !== 'vpn_product_types') return [];
+
+        const { data: ptRowRaw, error: ptErr } = await this.supabase
+            .from('vpn_product_types' as never)
+            .select('*')
+            .eq('id', productTypeId)
+            .maybeSingle();
+        if (ptErr || !ptRowRaw) return [];
+
+        const ptRow = ptRowRaw as unknown as DbRecord;
+        const result: PublicPaymentMethod[] = [];
+
+        const overrideCardsJson = ptRow.rial_card_numbers_override;
+        let overrideCards: string[] = [];
+        if (Array.isArray(overrideCardsJson)) {
+            overrideCards = (overrideCardsJson as unknown[])
+                .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+                .filter(Boolean);
+        } else if (typeof overrideCardsJson === 'string') {
+            overrideCards = parseCardList(overrideCardsJson);
+        }
+        if (overrideCards.length > 0) {
+            overrideCards.forEach((card, index) => {
+                result.push({
+                    id: productTypeId * 1000 + 100 + index,
+                    productTypeId,
+                    kind: 'rial_card',
+                    label: `کارت به کارت`,
+                    payToValue: card,
+                    instructions: asString(ptRow.guideline_text) ?? null,
+                    metadata: { source: 'product_type_override' },
+                });
+            });
+            return result;
+        }
+
+        const supplierId = asNumber(ptRow.supplier_id);
+        if (!supplierId) return result;
+
+        const { data: supplierMethodsRaw, error: supplierMethodsErr } = await this.supabase
+            .from('supplier_payment_methods' as never)
+            .select('*')
+            .eq('supplier_id', supplierId)
+            .eq('is_active', true)
+            .eq('kind', 'rial_card')
+            .order('sort_order', { ascending: true })
+            .order('id', { ascending: true });
+        if (!supplierMethodsErr && Array.isArray(supplierMethodsRaw)) {
+            const rows = supplierMethodsRaw as unknown as DbRecord[];
+            const mapped = rows
+                .map((row) => this.mapPaymentMethodRow(row, productTypeId))
+                .filter((m): m is PublicPaymentMethod => Boolean(m))
+                .map((m) => ({
+                    ...m,
+                    metadata: {
+                        ...(m.metadata ?? {}),
+                        source: 'supplier_payment_methods',
+                    },
+                }));
+            if (mapped.length > 0) return mapped;
+        }
+
+        const { data: supplierRaw, error: supplierErr } = await this.supabase
+            .from('suppliers' as never)
+            .select('default_rial_card_numbers')
+            .eq('id', supplierId)
+            .maybeSingle();
+        if (supplierErr || !supplierRaw) return result;
+
+        const supplierRow = supplierRaw as unknown as DbRecord;
+        const rawDefaultCards = supplierRow.default_rial_card_numbers;
+        let defaultCards: string[] = [];
+        if (Array.isArray(rawDefaultCards)) {
+            defaultCards = (rawDefaultCards as unknown[])
+                .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+                .filter(Boolean);
+        } else if (typeof rawDefaultCards === 'string') {
+            defaultCards = parseCardList(rawDefaultCards);
+        } else if (rawDefaultCards && typeof rawDefaultCards === 'object') {
+            const obj = rawDefaultCards as Record<string, unknown>;
+            if (Array.isArray(obj.cardNumbers)) {
+                defaultCards = obj.cardNumbers
+                    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+                    .filter(Boolean);
+            }
+        }
+
+        defaultCards.forEach((card, index) => {
+            result.push({
+                id: productTypeId * 1000 + 200 + index,
+                productTypeId,
+                kind: 'rial_card',
+                label: `کارت به کارت`,
+                payToValue: card,
+                instructions: null,
+                metadata: { source: 'supplier_default_cards' },
+            });
+        });
+
+        return result;
+    }
+
+    private rotateRialMethods(methods: PublicPaymentMethod[], plan: PublicPlan): PublicPaymentMethod[] {
+        if (!methods.length) return methods;
+        const rial = methods.filter((m) => m.kind === 'rial_card');
+        const nonRial = methods.filter((m) => m.kind !== 'rial_card');
+        if (rial.length <= 1) return [...rial, ...nonRial];
+
+        const byCard = new Map<string, PublicPaymentMethod>();
+        for (const method of rial) {
+            const key = (method.payToValue ?? '').trim();
+            if (!key) continue;
+            if (!byCard.has(key)) byCard.set(key, method);
+        }
+        const distinct = Array.from(byCard.values());
+        if (!distinct.length) return nonRial;
+
+        const seed = `${plan.productTypeId ?? plan.id}:${plan.internalPlanKey}`;
+        const chosen = distinct[computeStableRotationIndex(seed, distinct.length)];
+        return [chosen, ...nonRial];
     }
 }

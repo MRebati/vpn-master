@@ -162,6 +162,10 @@ export interface PublicPlan {
      */
     internalPlanKey: string;
     productTypeId?: number | null;
+    /** Internal-only supplier binding for payment routing. */
+    supplierId?: number | null;
+    /** Optional per-product override card list (raw DB value normalized in service). */
+    rialCardNumbersOverride?: string[] | null;
 }
 
 export interface PublicPaymentMethod {
