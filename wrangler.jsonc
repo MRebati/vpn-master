@@ -33,7 +33,7 @@
 		"CARD_NUMBER": "6104337484800110",
 		"TEST_MODE": "false",
 		"CHANNEL_ID": "2546220251",
-		"STAFF_CHANNEL_ID": ""
+		"STAFF_CHANNEL_ID": "2546220251"
 	},
 	/**
 	 * Note: Use secrets to store sensitive data.

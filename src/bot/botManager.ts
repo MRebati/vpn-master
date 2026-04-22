@@ -11,6 +11,7 @@ import { Env } from "../index";
 import { createClient } from "@supabase/supabase-js";
 import { Database } from "../types";
 import { canActAsStaff } from "../utils/staffAccess";
+import { escapeHtml, PARSE_HTML } from "../utils/telegramHtml";
 
 // Bot context type with environment
 export type BotContext = Context & { env: Env };
@@ -51,7 +52,7 @@ export class BotManager {
                     // Try to send an error message to the user
                     try {
                         if (ctx.chat) {
-                            await ctx.reply(MESSAGES.ERROR);
+                            await ctx.reply(MESSAGES.ERROR, { parse_mode: PARSE_HTML });
                         }
                     } catch (replyErr) {
                         console.error(`[REPLY_ERROR] Failed to send error message:`, replyErr);
@@ -117,20 +118,26 @@ export class BotManager {
         // Simple fallback menus with minimal functionality
         this.plansMenu = new Menu<BotContext>("plans-menu-fallback")
             .text("یک ماهه", async (ctx) => {
-                await ctx.reply(MESSAGES.ERROR + "\n\n🔧 حالت آزمایشی فعال است");
+                await ctx.reply(MESSAGES.ERROR + "\n\n🔧 حالت آزمایشی فعال است", {
+                    parse_mode: PARSE_HTML,
+                });
             })
             .row()
             .text("سه ماهه", async (ctx) => {
-                await ctx.reply(MESSAGES.ERROR + "\n\n🔧 حالت آزمایشی فعال است");
+                await ctx.reply(MESSAGES.ERROR + "\n\n🔧 حالت آزمایشی فعال است", {
+                    parse_mode: PARSE_HTML,
+                });
             });
             
         this.mainMenu = new Menu<BotContext>("main-menu-fallback")
             .text("🛍 خرید اشتراک", async (ctx) => {
-                await ctx.reply(MESSAGES.ERROR + "\n\n🔧 حالت آزمایشی فعال است");
+                await ctx.reply(MESSAGES.ERROR + "\n\n🔧 حالت آزمایشی فعال است", {
+                    parse_mode: PARSE_HTML,
+                });
             })
             .row()
             .text("❓ راهنما", async (ctx) => {
-                await ctx.reply(MESSAGES.HELP);
+                await ctx.reply(MESSAGES.HELP, { parse_mode: PARSE_HTML });
             });
             
         this.bot.use(this.plansMenu);
@@ -202,7 +209,7 @@ export class BotManager {
                             const planInfo = VPN_PLANS[planKey];
                             await ctx.reply(
                                 `📋 پلن انتخابی: ${planInfo.name}\n💲 مبلغ قابل پرداخت: ${payment.amount.toLocaleString()} تومان`,
-                                { parse_mode: "MarkdownV2" }
+                                { parse_mode: PARSE_HTML }
                             );
                             const instructions = this.paymentService.getPaymentInstructions(
                                 payment.id,
@@ -210,7 +217,7 @@ export class BotManager {
                                 payment.amount,
                                 card
                             );
-                            await ctx.reply(instructions, { parse_mode: "MarkdownV2" });
+                            await ctx.reply(instructions, { parse_mode: PARSE_HTML });
                         } catch (error) {
                             console.error(`[ERROR] Error in plan selection handler:`, error);
                             if (error instanceof Error) {
@@ -240,11 +247,17 @@ export class BotManager {
         // Main menu
         const mainMenu = new Menu<BotContext>("main-menu")
             .text("🛍 خرید اشتراک", async (ctx) => {
-                await ctx.reply(MESSAGES.SELECT_PLAN, { reply_markup: plansMenu });
+                await ctx.reply(MESSAGES.SELECT_PLAN, {
+                    reply_markup: plansMenu,
+                    parse_mode: PARSE_HTML,
+                });
             })
             .row()
             .text("🔄 تمدید اشتراک", async (ctx) => {
-                await ctx.reply(MESSAGES.SELECT_PLAN, { reply_markup: plansMenu });
+                await ctx.reply(MESSAGES.SELECT_PLAN, {
+                    reply_markup: plansMenu,
+                    parse_mode: PARSE_HTML,
+                });
             })
             .row()
             .text("📋 اکانت‌های من", async (ctx) => {
@@ -267,13 +280,13 @@ export class BotManager {
             .row()
             .text("❓ راهنما", async (ctx) => {
                 console.log(`[HELP] Showing help to user ${ctx.from.id} (${ctx.from.first_name})`);
-                await ctx.reply(MESSAGES.HELP);
+                await ctx.reply(MESSAGES.HELP, { parse_mode: PARSE_HTML });
             })
             .row()
             .text("📞 پشتیبانی", async (ctx) => {
                 console.log(`[SUPPORT] Showing support info to user ${ctx.from.id} (${ctx.from.first_name})`);
                 const text = await this.settingsService.getSupportChannel(MESSAGES.SUPPORT);
-                await ctx.reply(text);
+                await ctx.reply(text, { parse_mode: PARSE_HTML });
             });
             
         return { plansMenu, mainMenu };
@@ -300,7 +313,10 @@ export class BotManager {
                     
                     // Show welcome message with main menu
                     console.log(`[REPLY] Sending welcome message with main menu to user ${ctx.from.id}`);
-                    await ctx.reply(MESSAGES.WELCOME, { reply_markup: this.mainMenu });
+                    await ctx.reply(MESSAGES.WELCOME, {
+                        reply_markup: this.mainMenu,
+                        parse_mode: PARSE_HTML,
+                    });
                     console.log(`[REPLY] Welcome message sent successfully to user ${ctx.from.id}`);
                 } catch (dbError) {
                     console.error(`[DB_ERROR] Error in database operation during /start command:`, dbError);
@@ -309,8 +325,9 @@ export class BotManager {
                     const isTestMode = this.env.TEST_MODE === 'true';
                     if (isTestMode) {
                         console.log(`[TEST_MODE] Continuing in test mode despite database error`);
-                        await ctx.reply(MESSAGES.WELCOME + "\n\n🔧 حالت آزمایشی فعال است", { 
-                            reply_markup: this.mainMenu 
+                        await ctx.reply(MESSAGES.WELCOME + "\n\n🔧 حالت آزمایشی فعال است", {
+                            reply_markup: this.mainMenu,
+                            parse_mode: PARSE_HTML,
                         });
                     } else {
                         throw dbError; // Re-throw to be caught by the outer catch block
@@ -320,20 +337,24 @@ export class BotManager {
                 console.error(`[COMMAND_ERROR] Error handling /start command:`, error);
                 
                 // Send a more friendly error message to the user
-                const errorMsg = `${MESSAGES.ERROR}\n\nکد خطا: ${error instanceof Error ? error.message.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&') : 'خطای ناشناخته'}`;
-                await ctx.reply(errorMsg, { parse_mode: "MarkdownV2" });
-                
+                const errDetail = error instanceof Error ? escapeHtml(error.message) : 'خطای ناشناخته';
+                const errorMsg = `${MESSAGES.ERROR}\n\nکد خطا: ${errDetail}`;
+                await ctx.reply(errorMsg, { parse_mode: PARSE_HTML });
+
                 // Notify channel about the error if possible
                 try {
-                    const adminErrorMsg = `⚠️ *خطای مدیریتی*\n❌ خطا: ${(error.message || 'خطای ناشناخته').replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&')}\n⏱️ زمان: ${new Date().toISOString()}`;
+                    const adminErrorMsg =
+                        `⚠️ <b>خطای مدیریتی</b>\n\n` +
+                        `❌ <code>${escapeHtml(String(error instanceof Error ? error.message : 'خطای ناشناخته'))}</code>\n` +
+                        `⏱️ زمان: ${escapeHtml(new Date().toISOString())}`;
                     const channelId = this.env.CHANNEL_ID ? `-100${this.env.CHANNEL_ID}` : null;
-                    
+
                     if (channelId) {
-                        await this.bot.api.sendMessage(channelId, adminErrorMsg, { parse_mode: "MarkdownV2" });
+                        await this.bot.api.sendMessage(channelId, adminErrorMsg, { parse_mode: PARSE_HTML });
                         console.log(`[CHANNEL_NOTIFY] Admin error notification sent to channel ${channelId}`);
                     } else {
                         // Fallback to admin user
-                        await this.bot.api.sendMessage(this.env.ADMIN_USER_ID, adminErrorMsg, { parse_mode: "MarkdownV2" });
+                        await this.bot.api.sendMessage(this.env.ADMIN_USER_ID, adminErrorMsg, { parse_mode: PARSE_HTML });
                         console.log(`[ADMIN_NOTIFY] Admin error notification sent to admin user`);
                     }
                 } catch (notifyError) {
@@ -348,7 +369,7 @@ export class BotManager {
                 console.log(`[COMMAND] /help from ${ctx.from.first_name} (${ctx.from.id})`);
                 await ctx.replyWithPhoto(
                     'https://vpn-master-bot.m-rebati.workers.dev/images/help.jpg',
-                    { caption: MESSAGES.HELP, parse_mode: "MarkdownV2" }
+                    { caption: MESSAGES.HELP, parse_mode: PARSE_HTML }
                 );
             } catch (error) {
                 console.error(`[COMMAND_ERROR] Error handling /help command:`, error);
@@ -373,28 +394,28 @@ export class BotManager {
                 const channelIdFromEnv = this.env.CHANNEL_ID || '2546220251';
                 await ctx.reply(`Attempt 1: Trying with ID format: -100${channelIdFromEnv}`);
                 try {
-                    await this.bot.api.sendMessage(`-100${channelIdFromEnv}`, testMessage, { parse_mode: "MarkdownV2" });
+                    await this.bot.api.sendMessage(`-100${channelIdFromEnv}`, testMessage, { parse_mode: PARSE_HTML });
                     await ctx.reply(`✅ Success! Message sent to channel with ID: -100${channelIdFromEnv}`);
                 } catch (error) {
                     await ctx.reply(`❌ Failed: ${error.message}`);
                 
                     await ctx.reply("Attempt 2: Trying with username format: @VPNMasters_Support");
                     try {
-                        await this.bot.api.sendMessage('@VPNMasters_Support', testMessage, { parse_mode: "MarkdownV2" });
+                        await this.bot.api.sendMessage('@VPNMasters_Support', testMessage, { parse_mode: PARSE_HTML });
                         await ctx.reply("✅ Success! Message sent to channel with username: @VPNMasters_Support");
                     } catch (error2) {
                         await ctx.reply(`❌ Failed: ${error2.message}`);
                     
                         await ctx.reply(`Attempt 3: Trying with numeric ID only: ${channelIdFromEnv}`);
                         try {
-                            await this.bot.api.sendMessage(channelIdFromEnv, testMessage, { parse_mode: "MarkdownV2" });
+                            await this.bot.api.sendMessage(channelIdFromEnv, testMessage, { parse_mode: PARSE_HTML });
                             await ctx.reply(`✅ Success! Message sent to channel with ID: ${channelIdFromEnv}`);
                         } catch (error3) {
                             await ctx.reply(`❌ Failed: ${error3.message}`);
                             
                             await ctx.reply("Attempt 4: Trying with supergroupID (-100) format");
                             try {
-                                await this.bot.api.sendMessage('-100' + channelIdFromEnv, testMessage, { parse_mode: "MarkdownV2" });
+                                await this.bot.api.sendMessage('-100' + channelIdFromEnv, testMessage, { parse_mode: PARSE_HTML });
                                 await ctx.reply(`✅ Success! Message sent with ID: -100${channelIdFromEnv}`);
                             } catch (error4) {
                                 await ctx.reply(`❌ Failed: ${error4.message}`);
@@ -460,21 +481,25 @@ export class BotManager {
                 const webhookInfo = await this.getWebhookInfo();
                 
                 if (webhookInfo) {
-                    const message = `🔗 *Webhook Information*\n\n` +
-                        `URL: ${webhookInfo.url ? webhookInfo.url.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&') : 'Not set'}\n` +
+                    const message =
+                        `🔗 <b>Webhook Information</b>\n\n` +
+                        `URL: ${webhookInfo.url ? escapeHtml(webhookInfo.url) : 'Not set'}\n` +
                         `Has Custom Certificate: ${webhookInfo.has_custom_certificate ? 'Yes' : 'No'}\n` +
                         `Pending Updates: ${webhookInfo.pending_update_count}\n` +
-                        `Last Error Date: ${webhookInfo.last_error_date ? new Date(webhookInfo.last_error_date * 1000).toISOString() : 'None'}\n` +
-                        `Last Error Message: ${webhookInfo.last_error_message ? webhookInfo.last_error_message.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&') : 'None'}\n` +
+                        `Last Error Date: ${webhookInfo.last_error_date ? escapeHtml(new Date(webhookInfo.last_error_date * 1000).toISOString()) : 'None'}\n` +
+                        `Last Error Message: ${webhookInfo.last_error_message ? escapeHtml(webhookInfo.last_error_message) : 'None'}\n` +
                         `Max Connections: ${webhookInfo.max_connections}`;
-                        
-                    await ctx.reply(message, { parse_mode: "MarkdownV2" });
+
+                    await ctx.reply(message, { parse_mode: PARSE_HTML });
                 } else {
                     await ctx.reply("❌ Failed to get webhook information.");
                 }
             } catch (error) {
                 console.error(`[COMMAND_ERROR] Error handling /checkwebhook command:`, error);
-                await ctx.reply(`${MESSAGES.ERROR}\n\nWebhook check error: ${error instanceof Error ? error.message.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&') : 'Unknown error'}`, { parse_mode: "MarkdownV2" });
+                await ctx.reply(
+                    `${MESSAGES.ERROR}\n\nWebhook check error: ${escapeHtml(error instanceof Error ? error.message : 'Unknown error')}`,
+                    { parse_mode: PARSE_HTML }
+                );
             }
         });
         
@@ -511,7 +536,10 @@ export class BotManager {
                 }
             } catch (error) {
                 console.error(`[COMMAND_ERROR] Error handling /setwebhook command:`, error);
-                await ctx.reply(`${MESSAGES.ERROR}\n\nWebhook set error: ${error instanceof Error ? error.message.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&') : 'Unknown error'}`, { parse_mode: "MarkdownV2" });
+                await ctx.reply(
+                    `${MESSAGES.ERROR}\n\nWebhook set error: ${escapeHtml(error instanceof Error ? error.message : 'Unknown error')}`,
+                    { parse_mode: PARSE_HTML }
+                );
             }
         });
 
@@ -547,21 +575,24 @@ export class BotManager {
                 // Get user info
                 const user = await this.userService.getUserById(payment.user_id);
                 
-                // Format the payment information
-                const message = `💳 *Payment Details*\n` +
-                    `🆔 Transaction ID: \`${payment.transaction_id}\`\n` +
-                    `👤 User: ${user ? `${user.first_name.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&')} \\(ID: ${user.id}\\)` : `User ID: ${payment.user_id}`}\n` +
-                    `💰 Amount: ${payment.amount} تومان\n` +
-                    `📅 Plan: ${payment.plan}\n` +
-                    `📊 Status: *${payment.status.toUpperCase()}*\n` +
-                    `💳 Card: ${payment.card_last_digits || 'Not provided'}\n` +
-                    `📆 Created: ${new Date(payment.created_at).toLocaleString('fa-IR')}\n` +
-                    `📆 Updated: ${new Date(payment.updated_at).toLocaleString('fa-IR')}`;
-                
-                await ctx.reply(message, { parse_mode: "MarkdownV2" });
+                const message =
+                    `💳 <b>Payment Details</b>\n` +
+                    `🆔 Transaction ID: <code>${escapeHtml(payment.transaction_id)}</code>\n` +
+                    `👤 User: ${user ? `${escapeHtml(user.first_name)} (ID: ${user.id})` : `User ID: ${payment.user_id}`}\n` +
+                    `💰 Amount: ${escapeHtml(String(payment.amount))} تومان\n` +
+                    `📅 Plan: ${escapeHtml(payment.plan)}\n` +
+                    `📊 Status: <b>${escapeHtml(payment.status.toUpperCase())}</b>\n` +
+                    `💳 Card: ${escapeHtml(payment.card_last_digits || 'Not provided')}\n` +
+                    `📆 Created: ${escapeHtml(new Date(payment.created_at).toLocaleString('fa-IR'))}\n` +
+                    `📆 Updated: ${escapeHtml(new Date(payment.updated_at).toLocaleString('fa-IR'))}`;
+
+                await ctx.reply(message, { parse_mode: PARSE_HTML });
             } catch (error) {
                 console.error(`[COMMAND_ERROR] Error handling /payment command:`, error);
-                await ctx.reply(`${MESSAGES.ERROR}\n\nError: ${error instanceof Error ? error.message.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&') : 'Unknown error'}`, { parse_mode: "MarkdownV2" });
+                await ctx.reply(
+                    `${MESSAGES.ERROR}\n\nError: ${escapeHtml(error instanceof Error ? error.message : 'Unknown error')}`,
+                    { parse_mode: PARSE_HTML }
+                );
             }
         });
 
@@ -616,7 +647,10 @@ export class BotManager {
                 
             } catch (error) {
                 console.error(`[COMMAND_ERROR] Error handling /check_channel command:`, error);
-                await ctx.reply(`Error in channel check: ${error instanceof Error ? error.message.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&') : 'Unknown error'}`, { parse_mode: "MarkdownV2" });
+                await ctx.reply(
+                    `Error in channel check: ${escapeHtml(error instanceof Error ? error.message : 'Unknown error')}`,
+                    { parse_mode: PARSE_HTML }
+                );
             }
         });
     }
@@ -634,9 +668,11 @@ export class BotManager {
                 paymentService: this.paymentService,
                 inventoryService: this.inventoryService,
                 vpnAccountService: this.vpnAccountService,
+                productTypeService: this.inventoryService.getProductTypes(),
                 bot: this.bot,
                 paymentId,
                 isTestMode: this.env.TEST_MODE === "true",
+                adminBotToken: this.env.ADMIN_BOT_TOKEN,
             });
             if (!result.ok) {
                 await ctx.reply(`خطا: ${result.error ?? "نامشخص"}`);
@@ -698,16 +734,16 @@ export class BotManager {
                 }
 
                 await this.paymentService.recordProof(pending.id, fileId, proofType);
-                await ctx.reply(MESSAGES.PAYMENT_RECEIVED, { parse_mode: "MarkdownV2" });
+                await ctx.reply(MESSAGES.PAYMENT_RECEIVED, { parse_mode: PARSE_HTML });
 
                 const channelId = this.env.CHANNEL_ID ? `-100${this.env.CHANNEL_ID}` : null;
                 if (!channelId) return;
 
-                const caption =
-                    `🔔 *رسید پرداخت*\n\n` +
-                    `👤 ${(ctx.from.first_name || "").replace(/[_*[\]()~`>#+\-=|{}.!]/g, "\\$&")}\n` +
-                    `💰 ${pending.amount.toLocaleString()} تومان\n` +
-                    `🧾 \`${pending.transaction_id}\` · payment #${pending.id}`;
+                const captionHtml =
+                    `🔔 <b>رسید پرداخت</b>\n\n` +
+                    `👤 ${escapeHtml(ctx.from.first_name || "")}\n` +
+                    `💰 ${escapeHtml(pending.amount.toLocaleString())} تومان\n` +
+                    `🧾 <code>${escapeHtml(pending.transaction_id)}</code> · payment #${pending.id}`;
 
                 const keyboard = {
                     inline_keyboard: [
@@ -718,18 +754,35 @@ export class BotManager {
                     ],
                 };
 
-                if (proofType === "photo") {
-                    await this.bot.api.sendPhoto(channelId, fileId, {
-                        caption,
-                        parse_mode: "MarkdownV2",
-                        reply_markup: keyboard,
-                    });
-                } else {
-                    await this.bot.api.sendDocument(channelId, fileId, {
-                        caption,
-                        parse_mode: "MarkdownV2",
-                        reply_markup: keyboard,
-                    });
+                const fromChatId = ctx.chat?.id;
+                const messageId = ctx.message?.message_id;
+                if (fromChatId !== undefined && messageId !== undefined) {
+                    try {
+                        await this.bot.api.copyMessage(channelId, fromChatId, messageId, {
+                            caption: captionHtml,
+                            parse_mode: PARSE_HTML,
+                            reply_markup: keyboard,
+                        });
+                    } catch (copyErr) {
+                        console.error("[MEDIA_HANDLER] copyMessage failed:", copyErr);
+                        try {
+                            if (proofType === "photo") {
+                                await this.bot.api.sendPhoto(channelId, fileId, {
+                                    caption: captionHtml,
+                                    parse_mode: PARSE_HTML,
+                                    reply_markup: keyboard,
+                                });
+                            } else {
+                                await this.bot.api.sendDocument(channelId, fileId, {
+                                    caption: captionHtml,
+                                    parse_mode: PARSE_HTML,
+                                    reply_markup: keyboard,
+                                });
+                            }
+                        } catch (sendErr) {
+                            console.error("[MEDIA_HANDLER] sendPhoto/sendDocument failed:", sendErr);
+                        }
+                    }
                 }
             } catch (e) {
                 console.error("[MEDIA_HANDLER]", e);
@@ -764,13 +817,13 @@ export class BotManager {
                     // Show main menu for new users or users in idle state
                     await ctx.reply(MESSAGES.WELCOME, { 
                         reply_markup: this.mainMenu,
-                        parse_mode: "MarkdownV2"
+                        parse_mode: PARSE_HTML
                     });
                 } else if (user.step === UserStep.SELECTING_PLAN) {
                     // This should be handled by menu buttons, but just in case
                     await ctx.reply(MESSAGES.SELECT_PLAN, { 
                         reply_markup: this.plansMenu,
-                        parse_mode: "MarkdownV2"
+                        parse_mode: PARSE_HTML
                     });
                 } else if (
                     user.step === UserStep.AWAITING_USERNAME ||
@@ -779,18 +832,18 @@ export class BotManager {
                     await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT);
                     const pendingPayment = await this.paymentService.getLatestPendingPayment(user.id);
                     if (!pendingPayment) {
-                        await ctx.reply(MESSAGES.ERROR, { parse_mode: "MarkdownV2" });
+                        await ctx.reply(MESSAGES.ERROR, { parse_mode: PARSE_HTML });
                         return;
                     }
                     const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
                     const planInfo = VPN_PLANS[pendingPayment.plan];
                     await ctx.reply(
                         `📋 پلن انتخابی: ${planInfo.name}\n💲 مبلغ قابل پرداخت: ${pendingPayment.amount.toLocaleString()} تومان`,
-                        { parse_mode: "MarkdownV2" }
+                        { parse_mode: PARSE_HTML }
                     );
                     await ctx.reply(
-                        "⚠️ فرآیند خرید به‌روز شد؛ لطفاً پس از واریز، *عکس رسید* یا *اسکرین‌شات پیامک* را ارسال کنید\\.",
-                        { parse_mode: "MarkdownV2" }
+                        "⚠️ فرآیند خرید به‌روز شد؛ لطفاً پس از واریز، <b>عکس رسید</b> یا <b>اسکرین‌شات پیامک</b> را ارسال کنید.",
+                        { parse_mode: PARSE_HTML }
                     );
                     const instructions = this.paymentService.getPaymentInstructions(
                         pendingPayment.id,
@@ -798,16 +851,16 @@ export class BotManager {
                         pendingPayment.amount,
                         card
                     );
-                    await ctx.reply(instructions, { parse_mode: "MarkdownV2" });
+                    await ctx.reply(instructions, { parse_mode: PARSE_HTML });
                 } else if (user.step === UserStep.AWAITING_PAYMENT) {
-                    await ctx.reply(MESSAGES.INVALID_CARD_NUMBER, { parse_mode: "MarkdownV2" });
+                    await ctx.reply(MESSAGES.INVALID_CARD_NUMBER, { parse_mode: PARSE_HTML });
                 } else {
                     console.log(`[USER_STATE] Unhandled user state: ${user.step} for user ${user.id}`);
-                    await ctx.reply(MESSAGES.ERROR + "\n\nلطفاً با ارسال /start دوباره شروع کنید.", { parse_mode: "MarkdownV2" });
+                    await ctx.reply(MESSAGES.ERROR + "\n\nلطفاً با ارسال /start دوباره شروع کنید.", { parse_mode: PARSE_HTML });
                 }
             } catch (error) {
                 console.error(`[MESSAGE_ERROR] Error handling message:`, error);
-                await ctx.reply(MESSAGES.ERROR, { parse_mode: "MarkdownV2" });
+                await ctx.reply(MESSAGES.ERROR, { parse_mode: PARSE_HTML });
             }
         });
     }
@@ -871,7 +924,7 @@ export class BotManager {
                         await this.bot.api.sendMessage(
                             update.message.chat.id, 
                             MESSAGES.ERROR + "\n\n🔧 حالت آزمایشی فعال است",
-                            { parse_mode: "MarkdownV2" }
+                            { parse_mode: PARSE_HTML }
                         );
                     } catch (sendError) {
                         console.error(`[SEND_ERROR] Failed to send fallback message:`, sendError);
@@ -880,15 +933,18 @@ export class BotManager {
                 
                 // Notify channel if possible
                 try {
-                    const errorMsg = `⚠️ *خطای بات*\n❌ خطا: ${(botError.message || 'خطای ناشناخته').replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&')}\n⏱️ زمان: ${new Date().toISOString()}`;
+                    const errorMsg =
+                        `⚠️ <b>خطای بات</b>\n\n` +
+                        `❌ <code>${escapeHtml(String(botError instanceof Error ? botError.message : 'خطای ناشناخته'))}</code>\n` +
+                        `⏱️ زمان: ${escapeHtml(new Date().toISOString())}`;
                     const channelId = this.env.CHANNEL_ID ? `-100${this.env.CHANNEL_ID}` : null;
                     
                     if (channelId) {
-                        await this.bot.api.sendMessage(channelId, errorMsg, { parse_mode: "MarkdownV2" });
+                        await this.bot.api.sendMessage(channelId, errorMsg, { parse_mode: PARSE_HTML });
                         console.log(`[CHANNEL_NOTIFY] Bot error notification sent to channel ${channelId}`);
                     } else {
                         // Fallback to admin user
-                        await this.bot.api.sendMessage(this.env.ADMIN_USER_ID, errorMsg, { parse_mode: "MarkdownV2" });
+                        await this.bot.api.sendMessage(this.env.ADMIN_USER_ID, errorMsg, { parse_mode: PARSE_HTML });
                         console.log(`[ADMIN_NOTIFY] Bot error notification sent to admin user`);
                     }
                 } catch (notifyError) {
@@ -903,8 +959,11 @@ export class BotManager {
             // Notify admin if possible
             try {
                 if (this.env.ADMIN_USER_ID) {
-                    const errorMsg = `⚠️ *خطای بات*\n❌ خطا: ${(error.message || 'خطای ناشناخته').replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&')}\n⏱️ زمان: ${new Date().toISOString()}`;
-                    await this.bot.api.sendMessage(this.env.ADMIN_USER_ID, errorMsg, { parse_mode: "MarkdownV2" });
+                    const errorMsg =
+                        `⚠️ <b>خطای بات</b>\n\n` +
+                        `❌ <code>${escapeHtml(String(error instanceof Error ? error.message : 'خطای ناشناخته'))}</code>\n` +
+                        `⏱️ زمان: ${escapeHtml(new Date().toISOString())}`;
+                    await this.bot.api.sendMessage(this.env.ADMIN_USER_ID, errorMsg, { parse_mode: PARSE_HTML });
                 }
             } catch (notifyError) {
                 console.error(`[ADMIN_NOTIFY_ERROR] Failed to notify admin about update error:`, notifyError);

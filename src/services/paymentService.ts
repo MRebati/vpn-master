@@ -2,6 +2,8 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { Bot } from 'grammy';
 import type { Database, Payment } from '../types';
 import { VpnPlanKey, VPN_PLANS, PaymentStatus } from '../constants';
+import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
+import { ProductTypeService } from './productTypeService';
 
 /**
  * Service class for managing payments
@@ -12,6 +14,7 @@ export class PaymentService {
     private cardNumber: string;
     private bot?: Bot;
     private channelId?: string;
+    private productTypes: ProductTypeService;
 
     constructor(
         supabaseClient: SupabaseClient<Database>,
@@ -25,8 +28,17 @@ export class PaymentService {
         this.cardNumber = cardNumber;
         this.bot = bot;
         this.channelId = channelId;
-        
+        this.productTypes = new ProductTypeService(supabaseClient);
+
         console.log(`[PAYMENT_SERVICE] Initialized with admin ID: ${adminUserId}, channel ID: ${channelId || 'not set'}`);
+    }
+
+    private async resolvePlanPriceToman(planSlug: string): Promise<number> {
+        const pt = await this.productTypes.getActiveBySlug(planSlug);
+        if (pt?.price_toman != null) return pt.price_toman;
+        const legacy = VPN_PLANS[planSlug as VpnPlanKey];
+        if (legacy) return legacy.price;
+        throw new Error(`Unknown plan slug: ${planSlug}`);
     }
 
     /**
@@ -87,9 +99,9 @@ export class PaymentService {
      */
     async createManualCompletedPayment(
         userId: number,
-        plan: VpnPlanKey
+        plan: string
     ): Promise<Payment> {
-        const amount = VPN_PLANS[plan].price;
+        const amount = await this.resolvePlanPriceToman(plan);
         const transactionId = `MANUAL-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const { data, error } = await this.supabase
             .from('payments')
@@ -274,20 +286,27 @@ export class PaymentService {
         try {
             console.log(`[PAYMENT_SERVICE] Generating payment instructions for payment ID: ${paymentId}`);
 
+            const safeCard = escapeHtml(cardNumber.replace(/\s/g, ''));
+            const safeTxn = escapeHtml(String(transactionId || paymentId));
             const boldAmount =
                 amount > 0
-                    ? `💰 *مبلغ قابل پرداخت:* *${amount.toLocaleString()} تومان*\n\n`
+                    ? `💰 <b>مبلغ قابل پرداخت:</b> <b>${escapeHtml(amount.toLocaleString())} تومان</b>\n\n`
                     : '';
 
             return (
                 boldAmount +
-                `💳 *شماره کارت:*\n\`${cardNumber}\`\n\n` +
-                `📸 بعد از واریز، *عکس رسید* یا *اسکرین‌شات پیامک بانک* را همینجا بفرستید تا پشتیبان بررسی کند\\.\n\n` +
-                `🧾 *شناسه تراکنش:* \`${transactionId || paymentId}\``
+                `💳 <b>شماره کارت:</b>\n<code>${safeCard}</code>\n\n` +
+                `📸 بعد از واریز، <b>عکس رسید</b> یا <b>اسکرین‌شات پیامک بانک</b> را همینجا بفرستید تا پشتیبان بررسی کند.\n\n` +
+                `🧾 <b>شناسه تراکنش:</b> <code>${safeTxn}</code>`
             );
         } catch (error) {
             console.error(`[PAYMENT_SERVICE] Error generating payment instructions:`, error);
-            return `💰 *مبلغ پرداختی*\n\n💳 *شماره کارت:* \`${cardNumber}\`\n\n📸 بعد از واریز، عکس رسید را ارسال کنید\\._`;
+            const safeCard = escapeHtml(cardNumber.replace(/\s/g, ''));
+            return (
+                `💰 <b>مبلغ پرداختی</b>\n\n` +
+                `💳 <b>شماره کارت:</b> <code>${safeCard}</code>\n\n` +
+                `📸 بعد از واریز، عکس رسید را ارسال کنید.`
+            );
         }
     }
 
@@ -481,11 +500,12 @@ export class PaymentService {
                 const txnId = transactionId || (typeof paymentId === 'number' ? 
                     this.generateTransactionId() : String(paymentId));
                     
-                message = `🔔 *درخواست پرداخت جدید*\n\n` +
-                    `👤 کاربر: *${userName}*\n` +
-                    `💰 مبلغ: *${this.formatAmount(amount)}*\n` + 
-                    `🧾 شناسه تراکنش: \`${txnId}\`\n\n` +
-                    `⏱ تاریخ: _${new Date().toLocaleDateString('fa-IR')}_`;
+                message =
+                    `🔔 <b>درخواست پرداخت جدید</b>\n\n` +
+                    `👤 کاربر: <b>${escapeHtml(userName ?? '')}</b>\n` +
+                    `💰 مبلغ: <b>${escapeHtml(this.formatAmount(amount))}</b>\n` +
+                    `🧾 شناسه تراکنش: <code>${escapeHtml(String(txnId))}</code>\n\n` +
+                    `⏱ تاریخ: <i>${escapeHtml(new Date().toLocaleDateString('fa-IR'))}</i>`;
                 
                 const pid =
                     typeof paymentId === 'number' ? paymentId : Number(paymentId);
@@ -508,7 +528,7 @@ export class PaymentService {
             try {
                 console.log(`[CHANNEL_NOTIFY] Attempting to send to channel ID: ${channelId}`);
                 await this.bot.api.sendMessage(channelId, message, {
-                    parse_mode: "MarkdownV2",
+                    parse_mode: PARSE_HTML,
                     reply_markup: keyboard
                 });
                 console.log(`[CHANNEL_NOTIFY] Successfully sent notification to channel`);
@@ -520,7 +540,7 @@ export class PaymentService {
                     try {
                         console.log(`[CHANNEL_NOTIFY] Fallback: Sending to admin user: ${this.adminUserId}`);
                         await this.bot.api.sendMessage(this.adminUserId, message, {
-                            parse_mode: "MarkdownV2",
+                            parse_mode: PARSE_HTML,
                             reply_markup: keyboard
                         });
                         console.log(`[CHANNEL_NOTIFY] Successfully sent to admin user as fallback`);

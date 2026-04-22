@@ -20,15 +20,29 @@ export class VpnAccountService {
         userId: number,
         username: string,
         password: string,
-        plan: VpnPlanKey,
-        opts?: { inventory_id?: number | null; config_format?: string | null }
+        plan: string,
+        opts?: {
+            inventory_id?: number | null;
+            config_format?: string | null;
+            expiryDateIso?: string;
+        }
     ): Promise<VpnAccount> {
         try {
             console.log(`[VPN_SERVICE] Creating VPN account for user ${userId} with plan ${plan}`);
 
-            const planDuration = VPN_PLANS[plan].days;
-            const expiryDate = new Date();
-            expiryDate.setDate(expiryDate.getDate() + planDuration);
+            let expiryDate: Date;
+            if (opts?.expiryDateIso) {
+                expiryDate = new Date(opts.expiryDateIso);
+            } else {
+                const planDuration = VPN_PLANS[plan as VpnPlanKey]?.days;
+                if (planDuration) {
+                    expiryDate = new Date();
+                    expiryDate.setDate(expiryDate.getDate() + planDuration);
+                } else {
+                    expiryDate = new Date();
+                    expiryDate.setFullYear(expiryDate.getFullYear() + 10);
+                }
+            }
 
             const { data: account, error } = await this.supabase
                 .from('vpn_accounts')

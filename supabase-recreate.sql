@@ -27,6 +27,7 @@ DROP FUNCTION IF EXISTS public.update_timestamp();
 DROP TABLE IF EXISTS public.vpn_accounts CASCADE;
 DROP TABLE IF EXISTS public.payments CASCADE;
 DROP TABLE IF EXISTS public.account_inventory CASCADE;
+DROP TABLE IF EXISTS public.vpn_product_types CASCADE;
 DROP TABLE IF EXISTS public.vpn_users CASCADE;
 DROP TABLE IF EXISTS public.app_settings CASCADE;
 
@@ -66,11 +67,31 @@ CREATE TABLE public.payments (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE public.vpn_product_types (
+    id BIGSERIAL PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    label_fa TEXT NOT NULL,
+    unit TEXT NOT NULL CHECK (unit IN ('days', 'gb')),
+    metric_value NUMERIC NOT NULL CHECK (metric_value > 0),
+    price_toman INTEGER,
+    sort_order INT NOT NULL DEFAULT 0,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO public.vpn_product_types (slug, label_fa, unit, metric_value, price_toman, sort_order)
+VALUES
+    ('1month', 'یک‌ماهه', 'days', 30, 150000, 1),
+    ('3months', 'سه‌ماهه', 'days', 90, 400000, 2);
+
 CREATE TABLE public.account_inventory (
     id BIGSERIAL PRIMARY KEY,
     username TEXT NOT NULL,
     password TEXT NOT NULL,
     plan_key TEXT,
+    product_type_id BIGINT REFERENCES public.vpn_product_types(id) ON DELETE SET NULL,
+    stock_chat_id BIGINT,
+    stock_message_id INT,
     config_format TEXT NOT NULL DEFAULT 'openvpn',
     config_text TEXT,
     config_file_id TEXT,
@@ -131,5 +152,6 @@ CREATE INDEX payments_user_id_idx ON public.payments (user_id);
 CREATE INDEX payments_transaction_id_idx ON public.payments (transaction_id);
 CREATE INDEX payments_review_status_idx ON public.payments (review_status);
 CREATE INDEX account_inventory_status_plan_idx ON public.account_inventory (status, plan_key);
+CREATE INDEX account_inventory_product_type_status_idx ON public.account_inventory (product_type_id, status);
 
 COMMIT;

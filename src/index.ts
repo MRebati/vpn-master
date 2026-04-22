@@ -16,6 +16,13 @@ export interface Env {
      * Anyone who can post there is treated as staff for messages & inline buttons in that chat.
      */
     STAFF_CHANNEL_ID?: string;
+    /**
+     * Optional: channel where stock/inventory announcements are posted (no -100 prefix).
+     * If unset, addstock notifications use STAFF_CHANNEL_ID when set.
+     */
+    STOCK_CHANNEL_ID?: string;
+    /** Optional: public channel id — informational only; not used by the Worker (you manage it in Telegram). */
+    PUBLIC_CHANNEL_ID?: string;
     SUPABASE_URL: string;
     /**
      * Prefer a service role key for server-side Workers.

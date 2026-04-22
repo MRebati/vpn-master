@@ -1,22 +1,93 @@
 import { Bot, InputFile } from 'grammy';
-import type { Payment } from '../types';
+import type { AccountInventory } from '../types';
 import { UserService } from './userService';
 import { PaymentService } from './paymentService';
 import { InventoryService } from './inventoryService';
 import { VpnAccountService } from './vpnAccountService';
+import { ProductTypeService } from './productTypeService';
 import { UserStep, VPN_PLANS, VpnPlanKey } from '../constants';
 import { EXTENDED_MESSAGES } from '../extendedMessages';
-
-function escapeMdV2(s: string): string {
-    return s.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
-}
+import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
+import { formatSoldStockCard } from '../bot/stockCardMarkup';
 
 function accountCaption(username: string, password: string, expiryFa: string): string {
-    return (
-        EXTENDED_MESSAGES.ACCOUNT_CREATED.replace(/\{USERNAME\}/g, escapeMdV2(username))
-            .replace(/\{PASSWORD\}/g, escapeMdV2(password))
-            .replace(/\{EXPIRY_DATE\}/g, escapeMdV2(expiryFa))
-    );
+    return EXTENDED_MESSAGES.ACCOUNT_CREATED.replace(/\{USERNAME\}/g, escapeHtml(username))
+        .replace(/\{PASSWORD\}/g, escapeHtml(password))
+        .replace(/\{EXPIRY_DATE\}/g, escapeHtml(expiryFa));
+}
+
+async function computeAccountExpiry(
+    inv: AccountInventory,
+    planSlug: string,
+    productTypes: ProductTypeService
+): Promise<{ expiryIso: string; expiryFa: string }> {
+    if (inv.product_type_id) {
+        const pt = await productTypes.getById(inv.product_type_id);
+        if (pt) {
+            if (pt.unit === 'days') {
+                const d = new Date();
+                d.setDate(d.getDate() + Number(pt.metric_value));
+                return {
+                    expiryIso: d.toISOString(),
+                    expiryFa: d.toLocaleDateString('fa-IR'),
+                };
+            }
+            const d = new Date();
+            d.setFullYear(d.getFullYear() + 1);
+            const label = `${pt.metric_value} GB · ${pt.label_fa}`;
+            return { expiryIso: d.toISOString(), expiryFa: label };
+        }
+    }
+    const plan = planSlug as VpnPlanKey;
+    if (VPN_PLANS[plan]) {
+        const d = new Date();
+        d.setDate(d.getDate() + VPN_PLANS[plan].days);
+        return {
+            expiryIso: d.toISOString(),
+            expiryFa: d.toLocaleDateString('fa-IR'),
+        };
+    }
+    const d = new Date();
+    d.setFullYear(d.getFullYear() + 1);
+    return {
+        expiryIso: d.toISOString(),
+        expiryFa: d.toLocaleDateString('fa-IR'),
+    };
+}
+
+async function tryEditSoldStockMessage(params: {
+    adminBotToken?: string;
+    inventoryService: InventoryService;
+    productTypeService: ProductTypeService;
+    userService: UserService;
+    invId: number;
+}): Promise<void> {
+    const { adminBotToken, inventoryService, productTypeService, userService, invId } =
+        params;
+    if (!adminBotToken) return;
+
+    const inv = await inventoryService.getById(invId);
+    if (!inv || inv.stock_message_id == null || inv.stock_chat_id == null) return;
+
+    const buyer = inv.sold_user_id
+        ? await userService.getUserById(inv.sold_user_id)
+        : null;
+    const pt = inv.product_type_id
+        ? await productTypeService.getById(inv.product_type_id)
+        : null;
+
+    const text = formatSoldStockCard({ inv, productType: pt, buyer: buyer ?? null });
+    try {
+        const adminBot = new Bot(adminBotToken);
+        await adminBot.api.editMessageText(
+            Number(inv.stock_chat_id),
+            inv.stock_message_id,
+            text,
+            { parse_mode: PARSE_HTML }
+        );
+    } catch (e) {
+        console.error('[FULFILL] edit stock card:', e);
+    }
 }
 
 /**
@@ -27,26 +98,30 @@ export async function fulfillPaymentAfterApproval(params: {
     paymentService: PaymentService;
     inventoryService: InventoryService;
     vpnAccountService: VpnAccountService;
+    productTypeService: ProductTypeService;
     bot: Bot;
     paymentId: number;
     isTestMode: boolean;
+    adminBotToken?: string;
 }): Promise<{ ok: boolean; error?: string }> {
     const {
         paymentService,
         inventoryService,
         vpnAccountService,
+        productTypeService,
         userService,
         bot,
         paymentId,
         isTestMode,
+        adminBotToken,
     } = params;
 
     const payment = await paymentService.getPaymentById(paymentId);
     if (!payment) return { ok: false, error: 'payment_not_found' };
     if (payment.status !== 'PENDING') return { ok: false, error: 'not_pending' };
 
-    const plan = payment.plan as VpnPlanKey;
-    const inv = await inventoryService.takeNextForPlan(plan);
+    const planSlug = payment.plan;
+    const inv = await inventoryService.takeNextForPlan(planSlug);
     if (!inv) {
         return { ok: false, error: 'no_inventory' };
     }
@@ -57,10 +132,11 @@ export async function fulfillPaymentAfterApproval(params: {
     }
 
     const telegramId = dbUser.telegram_id;
-    const planDays = VPN_PLANS[plan].days;
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + planDays);
-    const expiryFa = expiryDate.toLocaleDateString('fa-IR');
+    const { expiryIso, expiryFa } = await computeAccountExpiry(
+        inv,
+        planSlug,
+        productTypeService
+    );
 
     try {
         await inventoryService.markSold(inv.id, dbUser.id, paymentId);
@@ -74,10 +150,11 @@ export async function fulfillPaymentAfterApproval(params: {
                 dbUser.id,
                 inv.username,
                 inv.password,
-                plan,
+                planSlug,
                 {
                     inventory_id: inv.id,
                     config_format: inv.config_format,
+                    expiryDateIso: expiryIso,
                 }
             );
         }
@@ -90,14 +167,22 @@ export async function fulfillPaymentAfterApproval(params: {
     await paymentService.setReviewStatus(paymentId, 'approved');
     await userService.setUserStep(dbUser.id, UserStep.IDLE);
 
+    await tryEditSoldStockMessage({
+        adminBotToken,
+        inventoryService,
+        productTypeService,
+        userService,
+        invId: inv.id,
+    });
+
     const cap = isTestMode
-        ? EXTENDED_MESSAGES.TEST_MODE_ACCOUNT.replace(/\{USERNAME\}/g, escapeMdV2(inv.username))
-              .replace(/\{PASSWORD\}/g, escapeMdV2(inv.password))
-              .replace(/\{EXPIRY_DATE\}/g, escapeMdV2(expiryFa))
+        ? EXTENDED_MESSAGES.TEST_MODE_ACCOUNT.replace(/\{USERNAME\}/g, escapeHtml(inv.username))
+              .replace(/\{PASSWORD\}/g, escapeHtml(inv.password))
+              .replace(/\{EXPIRY_DATE\}/g, escapeHtml(expiryFa))
         : accountCaption(inv.username, inv.password, expiryFa);
 
     try {
-        await bot.api.sendMessage(telegramId, cap, { parse_mode: 'MarkdownV2' });
+        await bot.api.sendMessage(telegramId, cap, { parse_mode: PARSE_HTML });
     } catch (e) {
         console.error('[FULFILL] sendMessage:', e);
     }
@@ -109,22 +194,22 @@ export async function fulfillPaymentAfterApproval(params: {
               ? 'ovpn'
               : 'conf';
 
-        try {
-            if (inv.config_text) {
-                const bytes = new TextEncoder().encode(inv.config_text);
-                await bot.api.sendDocument(
-                    telegramId,
-                    new InputFile(bytes, `vpn-${inv.id}.${ext}`),
-                    { caption: 'فایل کانفیگ' }
-                );
-            } else if (inv.config_file_id) {
-                await bot.api.sendDocument(telegramId, inv.config_file_id, {
-                    caption: 'فایل کانفیگ',
-                });
-            }
-        } catch (e) {
-            console.error('[FULFILL] sendDocument:', e);
+    try {
+        if (inv.config_text) {
+            const bytes = new TextEncoder().encode(inv.config_text);
+            await bot.api.sendDocument(
+                telegramId,
+                new InputFile(bytes, `vpn-${inv.id}.${ext}`),
+                { caption: 'فایل کانفیگ' }
+            );
+        } else if (inv.config_file_id) {
+            await bot.api.sendDocument(telegramId, inv.config_file_id, {
+                caption: 'فایل کانفیگ',
+            });
         }
+    } catch (e) {
+        console.error('[FULFILL] sendDocument:', e);
+    }
 
     return { ok: true };
 }
@@ -137,9 +222,11 @@ export async function deliverInventoryForCompletedPayment(params: {
     paymentService: PaymentService;
     inventoryService: InventoryService;
     vpnAccountService: VpnAccountService;
+    productTypeService: ProductTypeService;
     bot: Bot;
     payment: Payment;
     isTestMode: boolean;
+    adminBotToken?: string;
 }): Promise<{ ok: boolean; error?: string }> {
     const {
         payment,
@@ -147,21 +234,24 @@ export async function deliverInventoryForCompletedPayment(params: {
         vpnAccountService,
         userService,
         bot,
+        productTypeService,
         isTestMode,
+        adminBotToken,
     } = params;
 
-    const plan = payment.plan as VpnPlanKey;
-    const inv = await inventoryService.takeNextForPlan(plan);
+    const planSlug = payment.plan;
+    const inv = await inventoryService.takeNextForPlan(planSlug);
     if (!inv) return { ok: false, error: 'no_inventory' };
 
     const dbUser = await userService.getUserById(payment.user_id);
     if (!dbUser) return { ok: false, error: 'user_not_found' };
 
     const telegramId = dbUser.telegram_id;
-    const planDays = VPN_PLANS[plan].days;
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + planDays);
-    const expiryFa = expiryDate.toLocaleDateString('fa-IR');
+    const { expiryIso, expiryFa } = await computeAccountExpiry(
+        inv,
+        planSlug,
+        productTypeService
+    );
 
     try {
         await inventoryService.markSold(inv.id, dbUser.id, payment.id);
@@ -171,9 +261,10 @@ export async function deliverInventoryForCompletedPayment(params: {
 
     try {
         if (!isTestMode) {
-            await vpnAccountService.createVpnAccount(dbUser.id, inv.username, inv.password, plan, {
+            await vpnAccountService.createVpnAccount(dbUser.id, inv.username, inv.password, planSlug, {
                 inventory_id: inv.id,
                 config_format: inv.config_format,
+                expiryDateIso: expiryIso,
             });
         }
     } catch (e) {
@@ -181,13 +272,21 @@ export async function deliverInventoryForCompletedPayment(params: {
         return { ok: false, error: 'vpn_create_failed' };
     }
 
+    await tryEditSoldStockMessage({
+        adminBotToken,
+        inventoryService,
+        productTypeService,
+        userService,
+        invId: inv.id,
+    });
+
     const cap = isTestMode
-        ? EXTENDED_MESSAGES.TEST_MODE_ACCOUNT.replace(/\{USERNAME\}/g, escapeMdV2(inv.username))
-              .replace(/\{PASSWORD\}/g, escapeMdV2(inv.password))
-              .replace(/\{EXPIRY_DATE\}/g, escapeMdV2(expiryFa))
+        ? EXTENDED_MESSAGES.TEST_MODE_ACCOUNT.replace(/\{USERNAME\}/g, escapeHtml(inv.username))
+              .replace(/\{PASSWORD\}/g, escapeHtml(inv.password))
+              .replace(/\{EXPIRY_DATE\}/g, escapeHtml(expiryFa))
         : accountCaption(inv.username, inv.password, expiryFa);
 
-    await bot.api.sendMessage(telegramId, cap, { parse_mode: 'MarkdownV2' });
+    await bot.api.sendMessage(telegramId, cap, { parse_mode: PARSE_HTML });
 
     const ext =
         inv.config_format === 'v2ray'

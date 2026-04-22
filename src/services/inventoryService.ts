@@ -1,18 +1,42 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import type { Database, AccountInventory, VpnPlanKey } from '../types';
 import { VPN_PLANS } from '../constants';
+import { ProductTypeService } from './productTypeService';
 
 export class InventoryService {
-    constructor(private supabase: SupabaseClient<Database>) {}
+    private productTypes: ProductTypeService;
+
+    constructor(private supabase: SupabaseClient<Database>) {
+        this.productTypes = new ProductTypeService(supabase);
+    }
 
     /**
-     * Pick oldest available row matching plan (plan_key NULL matches any).
+     * Pick oldest available row for plan slug: prefer product_type match, else legacy plan_key pool.
      */
-    async takeNextForPlan(plan: VpnPlanKey): Promise<AccountInventory | null> {
+    async takeNextForPlan(plan: string): Promise<AccountInventory | null> {
+        const pt = await this.productTypes.getActiveBySlug(plan);
+        if (pt) {
+            const { data, error } = await this.supabase
+                .from('account_inventory')
+                .select('*')
+                .eq('status', 'available')
+                .eq('product_type_id', pt.id)
+                .order('id', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+
+            if (error) {
+                console.error('[INVENTORY] takeNextForPlan (typed):', error);
+                throw new Error(error.message);
+            }
+            if (data) return data;
+        }
+
         const { data, error } = await this.supabase
             .from('account_inventory')
             .select('*')
             .eq('status', 'available')
+            .is('product_type_id', null)
             .or(`plan_key.is.null,plan_key.eq.${plan}`)
             .order('id', { ascending: true })
             .limit(1)
@@ -61,7 +85,8 @@ export class InventoryService {
     async addRow(input: {
         username: string;
         password: string;
-        plan_key?: VpnPlanKey | null;
+        plan_key?: string | null;
+        product_type_id?: number | null;
         config_format?: string;
         config_text?: string | null;
         config_file_id?: string | null;
@@ -72,6 +97,7 @@ export class InventoryService {
                 username: input.username.trim(),
                 password: input.password.trim(),
                 plan_key: input.plan_key ?? null,
+                product_type_id: input.product_type_id ?? null,
                 config_format: input.config_format ?? 'openvpn',
                 config_text: input.config_text ?? null,
                 config_file_id: input.config_file_id ?? null,
@@ -84,7 +110,23 @@ export class InventoryService {
         return data;
     }
 
-    async countAvailable(plan?: VpnPlanKey): Promise<number> {
+    async setStockMessageMeta(
+        inventoryId: number,
+        stockChatId: number,
+        stockMessageId: number
+    ): Promise<void> {
+        const { error } = await this.supabase
+            .from('account_inventory')
+            .update({
+                stock_chat_id: stockChatId,
+                stock_message_id: stockMessageId,
+                updated_at: new Date().toISOString(),
+            })
+            .eq('id', inventoryId);
+        if (error) throw new Error(`setStockMessageMeta: ${error.message}`);
+    }
+
+    async countAvailable(plan?: VpnPlanKey | string): Promise<number> {
         let q = this.supabase
             .from('account_inventory')
             .select('id', { count: 'exact', head: true })
@@ -95,6 +137,18 @@ export class InventoryService {
         }
 
         const { count, error } = await q;
+        if (error) throw new Error(error.message);
+        return count ?? 0;
+    }
+
+    /** Available rows tied to a catalog product type id. */
+    async countAvailableForProductTypeId(productTypeId: number): Promise<number> {
+        const { count, error } = await this.supabase
+            .from('account_inventory')
+            .select('id', { count: 'exact', head: true })
+            .eq('status', 'available')
+            .eq('product_type_id', productTypeId);
+
         if (error) throw new Error(error.message);
         return count ?? 0;
     }
@@ -125,10 +179,30 @@ export class InventoryService {
         return data;
     }
 
+    /** List available rows for admin / stock channel summaries (oldest first). */
+    async listAvailableRows(limit: number = 25): Promise<AccountInventory[]> {
+        const { data, error } = await this.supabase
+            .from('account_inventory')
+            .select('*')
+            .eq('status', 'available')
+            .order('id', { ascending: true })
+            .limit(limit);
+
+        if (error) {
+            console.error('[INVENTORY] listAvailableRows:', error);
+            throw new Error(error.message);
+        }
+        return data ?? [];
+    }
+
     planExpiryFromPurchase(plan: VpnPlanKey): Date {
         const days = VPN_PLANS[plan].days;
         const d = new Date();
         d.setDate(d.getDate() + days);
         return d;
+    }
+
+    getProductTypes(): ProductTypeService {
+        return this.productTypes;
     }
 }

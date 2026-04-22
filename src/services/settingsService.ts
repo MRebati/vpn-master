@@ -48,4 +48,29 @@ export class SettingsService {
     async setSupportChannel(value: string): Promise<void> {
         await this.set(KEY_SUPPORT_CHANNEL, value.trim());
     }
+
+    private pendingPtKey(telegramUserId: number): string {
+        return `pending_stock_pt:${telegramUserId}`;
+    }
+
+    /** Selected product type for next User/Pass paste (staff flow). */
+    async setPendingStockProductType(
+        telegramUserId: number,
+        productTypeId: number | null
+    ): Promise<void> {
+        const key = this.pendingPtKey(telegramUserId);
+        if (productTypeId === null) {
+            const { error } = await this.supabase.from('app_settings').delete().eq('key', key);
+            if (error) console.error('[SETTINGS] delete pending pt:', error);
+        } else {
+            await this.set(key, String(productTypeId));
+        }
+    }
+
+    async getPendingStockProductType(telegramUserId: number): Promise<number | null> {
+        const v = await this.get(this.pendingPtKey(telegramUserId));
+        if (!v?.trim()) return null;
+        const n = parseInt(v, 10);
+        return Number.isFinite(n) ? n : null;
+    }
 }
