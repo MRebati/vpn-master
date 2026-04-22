@@ -18,11 +18,8 @@ export class CheckoutService {
         return this.catalogService.getPlanBySlug(slug);
     }
 
-    async listPaymentMethodsForPlan(
-        plan: PublicPlan,
-        fallbackCardNumber: string
-    ): Promise<PublicPaymentMethod[]> {
-        return this.catalogService.getPaymentMethodsForPlan(plan, fallbackCardNumber);
+    async listPaymentMethodsForPlan(plan: PublicPlan): Promise<PublicPaymentMethod[]> {
+        return this.catalogService.getPaymentMethodsForPlan(plan);
     }
 
     async createPaymentAndInstruction(input: {

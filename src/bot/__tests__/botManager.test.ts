@@ -85,7 +85,6 @@ vi.mock('../../services/paymentService', () => {
 
 vi.mock('../../services/settingsService', () => ({
     SettingsService: vi.fn().mockImplementation(() => ({
-        getCardNumber: vi.fn().mockResolvedValue('0000'),
         isSalesEnabled: vi.fn().mockResolvedValue(true),
     })),
 }));

@@ -312,8 +312,7 @@ export class BotManager {
         if (!user.selected_plan) return null;
         const plan = await this.catalogService.getPlanByInternalPlanKey(user.selected_plan);
         if (!plan || !plan.isCatalogVisible) return null;
-        const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
-        const methods = await this.checkoutService.listPaymentMethodsForPlan(plan, card);
+        const methods = await this.checkoutService.listPaymentMethodsForPlan(plan);
         const recovered = {
             plan,
             methods,
@@ -369,8 +368,7 @@ export class BotManager {
         await this.userService.selectPlan(user.id, plan.internalPlanKey, plan.priceToman);
         await this.userService.setUserStep(user.id, UserStep.AWAITING_PAYMENT_METHOD);
 
-        const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
-        const methods = await this.checkoutService.listPaymentMethodsForPlan(plan, card);
+        const methods = await this.checkoutService.listPaymentMethodsForPlan(plan);
         this.paymentMethodContextByTelegramId.set(ctx.from.id, {
             plan,
             methods,
@@ -1244,7 +1242,6 @@ export class BotManager {
                         await ctx.reply(MESSAGES.ERROR, { parse_mode: PARSE_HTML });
                         return;
                     }
-                    const card = await this.settingsService.getCardNumber(this.env.CARD_NUMBER);
                     const planInfo = await this.catalogService.getPlanByInternalPlanKey(pendingPayment.plan);
                     await ctx.reply(
                         `📋 پلن انتخابی: ${planInfo?.title ?? pendingPayment.plan}\n💲 مبلغ قابل پرداخت: ${pendingPayment.amount.toLocaleString()} تومان`
@@ -1256,8 +1253,7 @@ export class BotManager {
                     const instructions = this.paymentService.getPaymentInstructions(
                         pendingPayment.id,
                         pendingPayment.transaction_id,
-                        pendingPayment.amount,
-                        card
+                        pendingPayment.amount
                     );
                     await ctx.reply(instructions, { parse_mode: PARSE_HTML });
                 } else if (
