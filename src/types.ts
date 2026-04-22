@@ -39,6 +39,12 @@ export interface VpnProductType {
     price_toman: number | null;
     sort_order: number;
     is_active: boolean;
+    supplier_id?: number | null;
+    guideline_text?: string | null;
+    connection_url_template?: string | null;
+    delivery_config_text?: string | null;
+    delivery_config_file_id?: string | null;
+    delivery_config_format?: string | null;
     created_at: string;
 }
 

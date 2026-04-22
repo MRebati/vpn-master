@@ -20,6 +20,77 @@ function accountCaption(username: string, password: string, expiryFa: string): s
         .replace(/\{EXPIRY_DATE\}/g, escapeHtml(expiryFa));
 }
 
+function normalizeConnectionExt(format: string | null | undefined): string {
+    if (format === 'v2ray') return 'json';
+    if (format === 'openvpn') return 'ovpn';
+    return 'conf';
+}
+
+function resolveConnectionPayload(
+    inv: AccountInventory,
+    productType: { delivery_config_text?: string | null; delivery_config_format?: string | null } | null
+): { text: string; ext: string } | null {
+    const text =
+        inv.config_text?.trim() ||
+        (productType?.delivery_config_text ? productType.delivery_config_text.trim() : '');
+    if (!text) return null;
+    const ext = normalizeConnectionExt(inv.config_format || productType?.delivery_config_format || null);
+    return { text, ext };
+}
+
+function connectionHelpText(
+    productType: {
+        guideline_text?: string | null;
+        connection_url_template?: string | null;
+    } | null
+): string {
+    const guideline = productType?.guideline_text?.trim();
+    const connectionUrl = productType?.connection_url_template?.trim();
+    if (guideline && connectionUrl) {
+        return `ℹ️ راهنمای اتصال:\n${guideline}\n\n🔗 لینک راهنما:\n${connectionUrl}`;
+    }
+    if (guideline) return `ℹ️ راهنمای اتصال:\n${guideline}`;
+    if (connectionUrl) return `ℹ️ راهنمای اتصال:\n🔗 ${connectionUrl}`;
+    return 'ℹ️ راهنمای اتصال: کانفیگ را در اپلیکیشن OpenVPN یا V2Ray وارد کنید. در صورت مشکل با پشتیبانی تماس بگیرید.';
+}
+
+async function sendConnectionPackage(params: {
+    bot: Bot;
+    telegramId: number;
+    inv: AccountInventory;
+    productTypeService: ProductTypeService;
+}): Promise<void> {
+    const { bot, telegramId, inv, productTypeService } = params;
+    const productType = inv.product_type_id
+        ? await productTypeService.getById(inv.product_type_id)
+        : null;
+    const ext = normalizeConnectionExt(inv.config_format);
+    const keyboard = {
+        inline_keyboard: [[{ text: '📘 راهنمای اتصال', callback_data: 'connection-help' }]],
+    };
+
+    // 1) Prefer existing Telegram file id if available.
+    if (inv.config_file_id) {
+        await bot.api.sendDocument(telegramId, inv.config_file_id, {
+            caption: 'فایل اتصال',
+            reply_markup: keyboard,
+        });
+    } else {
+        // 2) Otherwise generate a connection file from inventory or product-type delivery template.
+        const payload = resolveConnectionPayload(inv, productType);
+        if (payload) {
+            const bytes = new TextEncoder().encode(payload.text);
+            await bot.api.sendDocument(telegramId, new InputFile(bytes, `connection-${inv.id}.${payload.ext}`), {
+                caption: 'فایل اتصال',
+                reply_markup: keyboard,
+            });
+        }
+    }
+
+    // Always send connection help text so user has instructions even if only file was sent.
+    await bot.api.sendMessage(telegramId, connectionHelpText(productType));
+}
+
 async function tryEditSoldStockMessage(params: {
     adminBotToken?: string;
     inventoryService: InventoryService;
@@ -156,28 +227,15 @@ export async function fulfillPaymentAfterApproval(params: {
         console.error('[FULFILL] sendMessage:', e);
     }
 
-    const ext =
-        inv.config_format === 'v2ray'
-            ? 'json'
-            : inv.config_format === 'openvpn'
-              ? 'ovpn'
-              : 'conf';
-
     try {
-        if (inv.config_text) {
-            const bytes = new TextEncoder().encode(inv.config_text);
-            await bot.api.sendDocument(
-                telegramId,
-                new InputFile(bytes, `vpn-${inv.id}.${ext}`),
-                { caption: 'فایل کانفیگ' }
-            );
-        } else if (inv.config_file_id) {
-            await bot.api.sendDocument(telegramId, inv.config_file_id, {
-                caption: 'فایل کانفیگ',
-            });
-        }
+        await sendConnectionPackage({
+            bot,
+            telegramId,
+            inv,
+            productTypeService,
+        });
     } catch (e) {
-        console.error('[FULFILL] sendDocument:', e);
+        console.error('[FULFILL] sendConnectionPackage:', e);
     }
 
     return { ok: true };
@@ -260,19 +318,12 @@ export async function deliverInventoryForCompletedPayment(params: {
 
     await bot.api.sendMessage(telegramId, cap, { parse_mode: PARSE_HTML });
 
-    const ext =
-        inv.config_format === 'v2ray'
-            ? 'json'
-            : inv.config_format === 'openvpn'
-              ? 'ovpn'
-              : 'conf';
-
-    if (inv.config_text) {
-        const bytes = new TextEncoder().encode(inv.config_text);
-        await bot.api.sendDocument(telegramId, new InputFile(bytes, `vpn-${inv.id}.${ext}`));
-    } else if (inv.config_file_id) {
-        await bot.api.sendDocument(telegramId, inv.config_file_id);
-    }
+    await sendConnectionPackage({
+        bot,
+        telegramId,
+        inv,
+        productTypeService,
+    });
 
     return { ok: true };
 }
