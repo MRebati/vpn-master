@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BotManager } from '../botManager';
 import { Bot } from 'grammy';
 import { Menu } from '@grammyjs/menu';
+import { SettingsService } from '../../services/settingsService';
+import { UserStep } from '../../constants';
 
 // Mock the dependencies
 vi.mock('grammy', () => {
@@ -77,6 +79,7 @@ vi.mock('../../services/paymentService', () => {
 vi.mock('../../services/settingsService', () => ({
     SettingsService: vi.fn().mockImplementation(() => ({
         getCardNumber: vi.fn().mockResolvedValue('0000'),
+        isSalesEnabled: vi.fn().mockResolvedValue(true),
     })),
 }));
 
@@ -95,6 +98,25 @@ vi.mock('../../services/vpnAccountService', () => ({
 vi.mock('../../services/fulfillmentService', () => ({
     fulfillPaymentAfterApproval: vi.fn().mockResolvedValue({ ok: true }),
 }));
+
+const getHandler = (mockBot: any, type: 'command' | 'callbackQuery' | 'on', matcher: any) => {
+    const calls = mockBot[type].mock.calls as any[];
+    for (const call of calls) {
+        const [first, second] = call;
+        if (type === 'command' && first === matcher) return second;
+        if (type === 'on' && first === matcher) return second;
+        if (type === 'callbackQuery' && first instanceof RegExp && first.source === matcher.source)
+            return second;
+    }
+    return undefined;
+};
+
+const getMenuTextHandler = (menuMockInstance: any, label: string) => {
+    const call = (menuMockInstance.text.mock.calls as any[]).find(
+        (args) => args[0] === label
+    );
+    return call?.[1];
+};
 
 describe('BotManager', () => {
     let botManager: BotManager;
@@ -154,6 +176,119 @@ describe('BotManager', () => {
             const mockBot = (Bot as any).mock.results[0].value;
             expect(mockBot.init).toHaveBeenCalled();
             expect(mockBot.handleUpdate).toHaveBeenCalledWith(update);
+        });
+    });
+
+    describe('sales toggle guards', () => {
+        it('non-purchase help command remains accessible when sales disabled', async () => {
+            const mockBot = (Bot as any).mock.results[0].value;
+            const settingsProto = (SettingsService as any).mock.results[0].value;
+            settingsProto.isSalesEnabled.mockResolvedValue(false);
+            const helpHandler = getHandler(mockBot, 'command', 'help');
+
+            const ctx = {
+                from: { id: 1, first_name: 'T' },
+                replyWithPhoto: vi.fn().mockResolvedValue(undefined),
+            };
+
+            await helpHandler(ctx);
+            expect(ctx.replyWithPhoto).toHaveBeenCalled();
+        });
+
+        it('blocks purchase entry from main menu when sales disabled', async () => {
+            const mockMenuInstance = (Menu as any).mock.results[1].value;
+            const settingsProto = (SettingsService as any).mock.results[0].value;
+            settingsProto.isSalesEnabled.mockResolvedValue(false);
+            const buyHandler = getMenuTextHandler(mockMenuInstance, '🛍 خرید اشتراک');
+
+            const ctx = {
+                from: { id: 1, first_name: 'T' },
+                reply: vi.fn().mockResolvedValue(undefined),
+            };
+
+            await buyHandler(ctx);
+            expect(ctx.reply).toHaveBeenCalled();
+            expect(ctx.reply.mock.calls[0][0]).toContain('فروش موقتاً متوقف شده');
+        });
+
+        it('blocks plan callback when sales disabled', async () => {
+            const mockBot = (Bot as any).mock.results[0].value;
+            const settingsProto = (SettingsService as any).mock.results[0].value;
+            settingsProto.isSalesEnabled.mockResolvedValue(false);
+            const planHandler = getHandler(mockBot, 'callbackQuery', /^plan:(.+)$/);
+
+            const ctx = {
+                from: { id: 1, first_name: 'T', username: 'u' },
+                match: ['plan:basic', 'basic'],
+                answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
+                reply: vi.fn().mockResolvedValue(undefined),
+            };
+
+            await planHandler(ctx);
+            expect(ctx.reply).toHaveBeenCalled();
+            expect(ctx.reply.mock.calls[0][0]).toContain('فروش موقتاً متوقف شده');
+        });
+
+        it('blocks payment method callback when sales disabled', async () => {
+            const mockBot = (Bot as any).mock.results[0].value;
+            const settingsProto = (SettingsService as any).mock.results[0].value;
+            settingsProto.isSalesEnabled.mockResolvedValue(false);
+            const methodHandler = getHandler(mockBot, 'callbackQuery', /^select_method:(\d+)$/);
+
+            const ctx = {
+                from: { id: 1, first_name: 'T', username: 'u' },
+                match: ['select_method:1', '1'],
+                answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
+                reply: vi.fn().mockResolvedValue(undefined),
+            };
+
+            await methodHandler(ctx);
+            expect(ctx.reply).toHaveBeenCalled();
+            expect(ctx.reply.mock.calls[0][0]).toContain('فروش موقتاً متوقف شده');
+        });
+
+        it('blocks proof submission entry when sales disabled', async () => {
+            const mockBot = (Bot as any).mock.results[0].value;
+            const settingsProto = (SettingsService as any).mock.results[0].value;
+            settingsProto.isSalesEnabled.mockResolvedValue(false);
+            const mediaHandler = getHandler(mockBot, 'on', ['message:photo', 'message:document']);
+
+            const userService = (await import('../../services/userService')).UserService as any;
+            userService.mock.results[0].value.getOrCreateUser.mockResolvedValue({
+                id: 10,
+                step: 'awaiting_payment_proof',
+            });
+
+            const ctx = {
+                from: { id: 1, first_name: 'T', username: 'u' },
+                message: { photo: [{ file_id: 'f1' }] },
+                reply: vi.fn().mockResolvedValue(undefined),
+            };
+
+            await mediaHandler(ctx);
+            expect(ctx.reply).toHaveBeenCalled();
+            expect(ctx.reply.mock.calls[0][0]).toContain('فروش موقتاً متوقف شده');
+        });
+
+        it('allows purchase entry from main menu when sales enabled', async () => {
+            const mockMenuInstance = (Menu as any).mock.results[1].value;
+            const settingsProto = (SettingsService as any).mock.results[0].value;
+            settingsProto.isSalesEnabled.mockResolvedValue(true);
+            const buyHandler = getMenuTextHandler(mockMenuInstance, '🛍 خرید اشتراک');
+
+            const userService = (await import('../../services/userService')).UserService as any;
+            userService.mock.results[0].value.getOrCreateUser.mockResolvedValue({
+                id: 1,
+                step: UserStep.IDLE,
+            });
+
+            const ctx = {
+                from: { id: 1, first_name: 'T', username: 'u' },
+                reply: vi.fn().mockResolvedValue(undefined),
+            };
+
+            await buyHandler(ctx);
+            expect(userService.mock.results[0].value.setUserStep).toHaveBeenCalled();
         });
     });
 }); 

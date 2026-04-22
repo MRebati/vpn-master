@@ -73,6 +73,15 @@ The bot uses a unique transaction ID system to track payments reliably:
 - When making payment, users only need to provide the last 6 digits of their card
 - This helps with tracking and reconciliation of payments
 
+## Global sales toggle (`sales_enabled`)
+
+- The bot reads `sales_enabled` from `app_settings` to control whether **new purchase steps** are allowed.
+- Accepted enabled values (case-insensitive): `true`, `1`, `yes`, `on`, `enabled`.
+- Missing key defaults to **enabled**.
+- When disabled, purchase entry and checkout progression are blocked with a user-friendly maintenance message.
+- Non-purchase commands (help, support, order/account status) remain available.
+- The value is cached briefly in-memory to reduce database load.
+
 ## Database Migration
 
 If you're upgrading from a previous version without transaction IDs, run the provided migration script:
