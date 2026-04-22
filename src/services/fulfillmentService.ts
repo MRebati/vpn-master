@@ -12,40 +12,12 @@ import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
 import { formatSoldStockCard } from '../bot/stockCardMarkup';
 import type { Payment } from '../types';
 
+const NON_EXPIRING_ACCOUNT_DATE = '2099-12-31T00:00:00.000Z';
+
 function accountCaption(username: string, password: string, expiryFa: string): string {
     return EXTENDED_MESSAGES.ACCOUNT_CREATED.replace(/\{USERNAME\}/g, escapeHtml(username))
         .replace(/\{PASSWORD\}/g, escapeHtml(password))
         .replace(/\{EXPIRY_DATE\}/g, escapeHtml(expiryFa));
-}
-
-async function computeAccountExpiry(
-    inv: AccountInventory,
-    planSlug: string,
-    productTypes: ProductTypeService
-): Promise<{ expiryIso: string; expiryFa: string }> {
-    if (inv.product_type_id) {
-        const pt = await productTypes.getById(inv.product_type_id);
-        if (pt) {
-            if (pt.unit === 'days') {
-                const d = new Date();
-                d.setDate(d.getDate() + Number(pt.metric_value));
-                return {
-                    expiryIso: d.toISOString(),
-                    expiryFa: d.toLocaleDateString('fa-IR'),
-                };
-            }
-            const d = new Date();
-            d.setFullYear(d.getFullYear() + 1);
-            const label = `${pt.metric_value} GB · ${pt.label_fa}`;
-            return { expiryIso: d.toISOString(), expiryFa: label };
-        }
-    }
-    const d = new Date();
-    d.setDate(d.getDate() + 30);
-    return {
-        expiryIso: d.toISOString(),
-        expiryFa: d.toLocaleDateString('fa-IR'),
-    };
 }
 
 async function tryEditSoldStockMessage(params: {
@@ -132,13 +104,7 @@ export async function fulfillPaymentAfterApproval(params: {
     }
 
     const telegramId = dbUser.telegram_id;
-    const planDays = planData?.unit === 'days' ? Number(planData.metricValue) : 0;
-    if (!Number.isFinite(planDays) || planDays <= 0) {
-        return { ok: false, error: 'invalid_plan_days' };
-    }
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + planDays);
-    const expiryFa = expiryDate.toLocaleDateString('fa-IR');
+    const expiryFa = 'نامحدود';
 
     try {
         await inventoryService.markSold(inv.id, dbUser.id, paymentId);
@@ -153,11 +119,11 @@ export async function fulfillPaymentAfterApproval(params: {
                 inv.username,
                 inv.password,
                 plan,
-                planDays,
+                null,
                 {
                     inventory_id: inv.id,
                     config_format: inv.config_format,
-                    // VpnAccountService computes expiry from planDurationDays.
+                    expiryDateIso: NON_EXPIRING_ACCOUNT_DATE,
                 }
             );
         }
@@ -257,11 +223,7 @@ export async function deliverInventoryForCompletedPayment(params: {
     if (!dbUser) return { ok: false, error: 'user_not_found' };
 
     const telegramId = dbUser.telegram_id;
-    const planDays = planData?.unit === 'days' ? Number(planData.metricValue) : 0;
-    if (!Number.isFinite(planDays) || planDays <= 0) return { ok: false, error: 'invalid_plan_days' };
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + planDays);
-    const expiryFa = expiryDate.toLocaleDateString('fa-IR');
+    const expiryFa = 'نامحدود';
 
     try {
         await inventoryService.markSold(inv.id, dbUser.id, payment.id);
@@ -271,10 +233,10 @@ export async function deliverInventoryForCompletedPayment(params: {
 
     try {
         if (!isTestMode) {
-            await vpnAccountService.createVpnAccount(dbUser.id, inv.username, inv.password, plan, planDays, {
+            await vpnAccountService.createVpnAccount(dbUser.id, inv.username, inv.password, plan, null, {
                 inventory_id: inv.id,
                 config_format: inv.config_format,
-                // VpnAccountService computes expiry from planDurationDays.
+                expiryDateIso: NON_EXPIRING_ACCOUNT_DATE,
             });
         }
     } catch (e) {

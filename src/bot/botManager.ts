@@ -433,17 +433,6 @@ export class BotManager {
                 await this.showPlanSelection(ctx);
             })
             .row()
-            .text("🔄 تمدید اشتراک", async (ctx) => {
-                if (!(await this.ensureSalesEnabledForPurchase(ctx, "renew-main-menu"))) return;
-                const user = await this.userService.getOrCreateUser(
-                    ctx.from.id,
-                    ctx.from.first_name,
-                    ctx.from.username
-                );
-                await this.userService.setUserStep(user.id, UserStep.SELECTING_PLAN);
-                await this.showPlanSelection(ctx);
-            })
-            .row()
             .text("📋 اکانت‌های من", async (ctx) => {
                 const user = await this.userService.getOrCreateUser(
                     ctx.from.id,
@@ -456,8 +445,7 @@ export class BotManager {
                     return;
                 }
                 const lines = accounts.map(
-                    (a, i) =>
-                        `${i + 1}. ${a.username} — انقضا: ${new Date(a.expiry_date).toLocaleDateString("fa-IR")}`
+                    (a, i) => `${i + 1}. ${a.username}`
                 );
                 await ctx.reply("📋 اکانت‌های شما:\n\n" + lines.join("\n"));
             })

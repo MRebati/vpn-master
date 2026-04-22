@@ -12,6 +12,12 @@ export class VpnAccountService {
         this.supabase = supabaseClient;
     }
 
+    private farFutureExpiryIso(): string {
+        // Renewal/expiry control is disabled in current product flow.
+        // Keep accounts active with a stable far-future date.
+        return new Date('2099-12-31T00:00:00.000Z').toISOString();
+    }
+
     /**
      * Create VPN account row (from inventory pool).
      */
@@ -20,14 +26,15 @@ export class VpnAccountService {
         username: string,
         password: string,
         plan: string,
-        planDurationDays: number,
-        opts?: { inventory_id?: number | null; config_format?: string | null }
+        _planDurationDays: number,
+        opts?: {
+            inventory_id?: number | null;
+            config_format?: string | null;
+            expiryDateIso?: string | null;
+        }
     ): Promise<VpnAccount> {
         try {
             console.log(`[VPN_SERVICE] Creating VPN account for user ${userId} with plan ${plan}`);
-
-            const expiryDate = new Date();
-            expiryDate.setDate(expiryDate.getDate() + planDurationDays);
 
             const { data: account, error } = await this.supabase
                 .from('vpn_accounts')
@@ -36,7 +43,7 @@ export class VpnAccountService {
                     username,
                     password,
                     plan,
-                    expiry_date: expiryDate.toISOString(),
+                    expiry_date: opts?.expiryDateIso ?? this.farFutureExpiryIso(),
                     is_active: true,
                     inventory_id: opts?.inventory_id ?? null,
                     config_format: opts?.config_format ?? null,
@@ -130,7 +137,9 @@ export class VpnAccountService {
      */
     async extendVpnAccount(accountId: number, plan: string, planDurationDays: number): Promise<void> {
         try {
-            console.log(`[VPN_SERVICE] Extending VPN account ${accountId} with plan ${plan}`);
+            console.log(
+                `[VPN_SERVICE] Renewal is disabled; forcing active far-future expiry for account ${accountId} (requested plan=${plan}, days=${planDurationDays})`
+            );
 
             const { data: currentAccount, error: fetchError } = await this.supabase
                 .from('vpn_accounts')
@@ -143,16 +152,12 @@ export class VpnAccountService {
                 throw new Error(`VPN account with ID ${accountId} not found`);
             }
 
-            const currentExpiry = new Date(currentAccount.expiry_date);
-            const now = new Date();
-
-            const baseDate = currentExpiry > now ? currentExpiry : now;
-            baseDate.setDate(baseDate.getDate() + planDurationDays);
+            const forcedExpiry = this.farFutureExpiryIso();
 
             const { error: updateError } = await this.supabase
                 .from('vpn_accounts')
                 .update({
-                    expiry_date: baseDate.toISOString(),
+                    expiry_date: forcedExpiry,
                     is_active: true,
                 })
                 .eq('id', accountId);
@@ -162,7 +167,7 @@ export class VpnAccountService {
                 throw new Error(`Failed to extend VPN account: ${updateError.message}`);
             }
 
-            console.log(`[VPN_SERVICE] Successfully extended VPN account ${accountId} to ${baseDate.toISOString()}`);
+            console.log(`[VPN_SERVICE] Successfully forced VPN account ${accountId} expiry to ${forcedExpiry}`);
         } catch (error) {
             console.error('[DB_ERROR] VPN account extension error:', error);
             throw error;
