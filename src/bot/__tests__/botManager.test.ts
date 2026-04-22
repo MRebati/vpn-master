@@ -104,7 +104,15 @@ const getHandler = (mockBot: any, type: 'command' | 'callbackQuery' | 'on', matc
     for (const call of calls) {
         const [first, second] = call;
         if (type === 'command' && first === matcher) return second;
-        if (type === 'on' && first === matcher) return second;
+        if (type === 'on') {
+            if (Array.isArray(first) && Array.isArray(matcher)) {
+                const sameLength = first.length === matcher.length;
+                const sameValues = sameLength && first.every((value, index) => value === matcher[index]);
+                if (sameValues) return second;
+            } else if (first === matcher) {
+                return second;
+            }
+        }
         if (type === 'callbackQuery' && first instanceof RegExp && first.source === matcher.source)
             return second;
     }
