@@ -15,7 +15,12 @@ vi.mock('grammy', () => {
             init: vi.fn().mockResolvedValue(undefined),
             command: vi.fn(),
             callbackQuery: vi.fn(),
-            api: { sendMessage: vi.fn(), sendPhoto: vi.fn(), sendDocument: vi.fn() },
+            api: {
+                sendMessage: vi.fn(),
+                sendPhoto: vi.fn(),
+                sendDocument: vi.fn(),
+                sendInvoice: vi.fn(),
+            },
         })),
     };
 });
@@ -66,10 +71,12 @@ vi.mock('../../services/paymentService', () => {
         PaymentService: vi.fn().mockImplementation(() => ({
             createPayment: vi.fn().mockResolvedValue({ id: 1 }),
             getLatestPendingPayment: vi.fn().mockResolvedValue(null),
+            getPaymentMethodKindFromPayment: vi.fn().mockReturnValue('rial_card'),
             updatePaymentStatus: vi.fn().mockResolvedValue(undefined),
             getPaymentInstructions: vi.fn().mockReturnValue(''),
             notifyChannel: vi.fn().mockResolvedValue(undefined),
             recordProof: vi.fn().mockResolvedValue(undefined),
+            recordProofText: vi.fn().mockResolvedValue(undefined),
             setReviewStatus: vi.fn().mockResolvedValue(undefined),
             getPaymentById: vi.fn().mockResolvedValue(null),
         })),
