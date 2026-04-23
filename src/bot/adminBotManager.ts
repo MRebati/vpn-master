@@ -535,6 +535,44 @@ export class AdminBotManager {
             });
         });
 
+        // Broadcast channels send channel_post (no `from`); do not run CSV ingest (needs ctx.from for pending type).
+        this.bot.on('channel_post:document', async (ctx) => {
+            if (!canActAsStaff(ctx, this.env)) return;
+            const workspace = isStaffWorkspaceChannelChat(ctx, this.env);
+            if (!workspace) return;
+
+            const doc = ctx.channelPost?.document;
+            if (!doc) return;
+            const fileName = doc.file_name ?? '';
+            const lowerName = fileName.toLowerCase();
+            const mime = (doc.mime_type ?? '').toLowerCase();
+            const isXlsx =
+                lowerName.endsWith('.xlsx') ||
+                mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+            if (isXlsx) {
+                await ctx.reply(
+                    'فایل Excel مستقیم پشتیبانی نمی‌شود. لطفاً خروجی را به CSV تبدیل کنید و دوباره بفرستید.',
+                    { parse_mode: PARSE_HTML }
+                );
+                return;
+            }
+            await ctx.reply(
+                `📎 <b>file_id</b> (document)\n<code>${escapeHtml(doc.file_id)}</code>`,
+                { parse_mode: PARSE_HTML }
+            );
+        });
+
+        this.bot.on('channel_post:photo', async (ctx) => {
+            if (!canActAsStaff(ctx, this.env)) return;
+            if (!isStaffWorkspaceChannelChat(ctx, this.env)) return;
+            const photos = ctx.channelPost?.photo;
+            if (!photos?.length) return;
+            const fileId = photos[photos.length - 1]!.file_id;
+            await ctx.reply(`📎 <b>file_id</b> (photo)\n<code>${escapeHtml(fileId)}</code>`, {
+                parse_mode: PARSE_HTML,
+            });
+        });
+
         this.registerInlineHandlers();
     }
 

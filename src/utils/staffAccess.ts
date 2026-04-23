@@ -67,16 +67,17 @@ export function isStaffWorkspaceChannelChat(ctx: Context, env: Env): boolean {
  */
 export function canActAsStaff(ctx: Context, env: Env): boolean {
     const uid = ctx.from?.id;
-    if (uid === undefined) return false;
+    if (uid !== undefined) {
+        if (uid.toString() === env.ADMIN_USER_ID) return true;
 
-    if (uid.toString() === env.ADMIN_USER_ID) return true;
+        const list =
+            env.STAFF_USER_IDS?.split(',')
+                .map((x) => x.trim())
+                .filter(Boolean) ?? [];
+        if (list.includes(uid.toString())) return true;
+    }
 
-    const list =
-        env.STAFF_USER_IDS?.split(',')
-            .map((x) => x.trim())
-            .filter(Boolean) ?? [];
-    if (list.includes(uid.toString())) return true;
-
+    // Channel posts often have no `from` (only sender_chat); still treat configured team channels as staff context.
     const chatId =
         ctx.chat?.id ?? ctx.callbackQuery?.message?.chat?.id;
     for (const raw of staffLikeChannelIds(env)) {

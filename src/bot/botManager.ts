@@ -10,7 +10,7 @@ import { MESSAGES, UserStep } from "../constants";
 import { Env } from "../index";
 import { createClient } from "@supabase/supabase-js";
 import { Database, PublicPaymentMethod, PublicPlan } from "../types";
-import { canActAsStaff } from "../utils/staffAccess";
+import { canActAsStaff, isStaffWorkspaceChannelChat } from "../utils/staffAccess";
 import { CatalogService } from "../services/catalogService";
 import { CheckoutService } from "../services/checkoutService";
 import { PaymentRailFactory } from "../services/paymentRails";
@@ -1004,6 +1004,44 @@ export class BotManager {
     }
 
     private registerMediaHandlers() {
+        const replyChannelFileId = async (ctx: BotContext, label: string, fileId: string) => {
+            if (!canActAsStaff(ctx, this.env)) return;
+            if (!isStaffWorkspaceChannelChat(ctx, this.env)) return;
+            await ctx.reply(`📎 <b>file_id</b> (${label})\n<code>${escapeHtml(fileId)}</code>`, {
+                parse_mode: PARSE_HTML,
+            });
+        };
+
+        this.bot.on("channel_post:document", async (ctx) => {
+            const doc = ctx.channelPost?.document;
+            if (!doc) return;
+            const fileName = doc.file_name ?? '';
+            const lowerName = fileName.toLowerCase();
+            const mime = (doc.mime_type ?? '').toLowerCase();
+            const isXlsx =
+                lowerName.endsWith('.xlsx') ||
+                mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+            if (
+                isXlsx &&
+                canActAsStaff(ctx, this.env) &&
+                isStaffWorkspaceChannelChat(ctx, this.env)
+            ) {
+                await ctx.reply(
+                    'فایل Excel مستقیم پشتیبانی نمی‌شود. لطفاً خروجی را به CSV تبدیل کنید و دوباره بفرستید.',
+                    { parse_mode: PARSE_HTML }
+                );
+                return;
+            }
+            await replyChannelFileId(ctx, 'document', doc.file_id);
+        });
+
+        this.bot.on("channel_post:photo", async (ctx) => {
+            const photos = ctx.channelPost?.photo;
+            if (!photos?.length) return;
+            const fileId = photos[photos.length - 1]!.file_id;
+            await replyChannelFileId(ctx, 'photo', fileId);
+        });
+
         this.bot.on(["message:photo", "message:document"], async (ctx) => {
             try {
                 const user = await this.userService.getOrCreateUser(
