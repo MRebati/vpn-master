@@ -10,6 +10,7 @@ import { SettingsService } from '../services/settingsService';
 import { ProductTypeService } from '../services/productTypeService';
 import { deliverInventoryForCompletedPayment } from '../services/fulfillmentService';
 import { CatalogService } from '../services/catalogService';
+import { claimChannelAlbumReply } from '../utils/channelAlbumDedupe';
 import {
     canActAsStaff,
     canUseStockPaste,
@@ -514,10 +515,7 @@ export class AdminBotManager {
             }
 
             if (paste || workspace) {
-                await ctx.reply(
-                    `📎 <b>file_id</b> (document)\n<code>${escapeHtml(doc.file_id)}</code>`,
-                    { parse_mode: PARSE_HTML }
-                );
+                await ctx.reply(`<code>${escapeHtml(doc.file_id)}</code>`, { parse_mode: PARSE_HTML });
             }
         });
 
@@ -530,9 +528,7 @@ export class AdminBotManager {
             const photos = ctx.message.photo;
             if (!photos?.length) return;
             const fileId = photos[photos.length - 1]!.file_id;
-            await ctx.reply(`📎 <b>file_id</b> (photo)\n<code>${escapeHtml(fileId)}</code>`, {
-                parse_mode: PARSE_HTML,
-            });
+            await ctx.reply(`<code>${escapeHtml(fileId)}</code>`, { parse_mode: PARSE_HTML });
         });
 
         // Broadcast channels send channel_post (no `from`); do not run CSV ingest (needs ctx.from for pending type).
@@ -541,7 +537,10 @@ export class AdminBotManager {
             const workspace = isStaffWorkspaceChannelChat(ctx, this.env);
             if (!workspace) return;
 
-            const doc = ctx.channelPost?.document;
+            const post = ctx.channelPost;
+            if (!(await claimChannelAlbumReply(ctx.chat?.id, post?.media_group_id))) return;
+
+            const doc = post?.document;
             if (!doc) return;
             const fileName = doc.file_name ?? '';
             const lowerName = fileName.toLowerCase();
@@ -556,21 +555,18 @@ export class AdminBotManager {
                 );
                 return;
             }
-            await ctx.reply(
-                `📎 <b>file_id</b> (document)\n<code>${escapeHtml(doc.file_id)}</code>`,
-                { parse_mode: PARSE_HTML }
-            );
+            await ctx.reply(`<code>${escapeHtml(doc.file_id)}</code>`, { parse_mode: PARSE_HTML });
         });
 
         this.bot.on('channel_post:photo', async (ctx) => {
             if (!canActAsStaff(ctx, this.env)) return;
             if (!isStaffWorkspaceChannelChat(ctx, this.env)) return;
-            const photos = ctx.channelPost?.photo;
+            const post = ctx.channelPost;
+            if (!(await claimChannelAlbumReply(ctx.chat?.id, post?.media_group_id))) return;
+            const photos = post?.photo;
             if (!photos?.length) return;
             const fileId = photos[photos.length - 1]!.file_id;
-            await ctx.reply(`📎 <b>file_id</b> (photo)\n<code>${escapeHtml(fileId)}</code>`, {
-                parse_mode: PARSE_HTML,
-            });
+            await ctx.reply(`<code>${escapeHtml(fileId)}</code>`, { parse_mode: PARSE_HTML });
         });
 
         this.registerInlineHandlers();

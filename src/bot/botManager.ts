@@ -14,6 +14,7 @@ import { canActAsStaff, isStaffWorkspaceChannelChat } from "../utils/staffAccess
 import { CatalogService } from "../services/catalogService";
 import { CheckoutService } from "../services/checkoutService";
 import { PaymentRailFactory } from "../services/paymentRails";
+import { claimChannelAlbumReply } from "../utils/channelAlbumDedupe";
 import { escapeHtml, PARSE_HTML } from "../utils/telegramHtml";
 
 // Bot context type with environment
@@ -203,7 +204,7 @@ export class BotManager {
             throw error;
         }
     }
-    
+
     /**
      * Create fallback menus in case the main menu creation fails
      */
@@ -1004,16 +1005,19 @@ export class BotManager {
     }
 
     private registerMediaHandlers() {
-        const replyChannelFileId = async (ctx: BotContext, label: string, fileId: string) => {
+        const replyChannelFileId = async (ctx: BotContext, fileId: string) => {
             if (!canActAsStaff(ctx, this.env)) return;
             if (!isStaffWorkspaceChannelChat(ctx, this.env)) return;
-            await ctx.reply(`📎 <b>file_id</b> (${label})\n<code>${escapeHtml(fileId)}</code>`, {
+            await ctx.reply(`<code>${escapeHtml(fileId)}</code>`, {
                 parse_mode: PARSE_HTML,
             });
         };
 
         this.bot.on("channel_post:document", async (ctx) => {
-            const doc = ctx.channelPost?.document;
+            const post = ctx.channelPost;
+            if (!(await claimChannelAlbumReply(ctx.chat?.id, post?.media_group_id))) return;
+
+            const doc = post?.document;
             if (!doc) return;
             const fileName = doc.file_name ?? '';
             const lowerName = fileName.toLowerCase();
@@ -1032,14 +1036,17 @@ export class BotManager {
                 );
                 return;
             }
-            await replyChannelFileId(ctx, 'document', doc.file_id);
+            await replyChannelFileId(ctx, doc.file_id);
         });
 
         this.bot.on("channel_post:photo", async (ctx) => {
-            const photos = ctx.channelPost?.photo;
+            const post = ctx.channelPost;
+            if (!(await claimChannelAlbumReply(ctx.chat?.id, post?.media_group_id))) return;
+
+            const photos = post?.photo;
             if (!photos?.length) return;
             const fileId = photos[photos.length - 1]!.file_id;
-            await replyChannelFileId(ctx, 'photo', fileId);
+            await replyChannelFileId(ctx, fileId);
         });
 
         this.bot.on(["message:photo", "message:document"], async (ctx) => {
