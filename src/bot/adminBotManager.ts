@@ -17,7 +17,11 @@ import {
     resolveTelegramChannelChatId,
 } from '../utils/staffAccess';
 import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
-import { parseUserPassBlock } from '../utils/parseStockCredential';
+import {
+    inferConfigFormat,
+    parseBulkStockRows,
+    parseUserPassBlock,
+} from '../utils/parseStockCredential';
 import { formatAvailableStockCard } from './stockCardMarkup';
 import {
     buildAccessDeniedArticle,
@@ -99,6 +103,101 @@ export class AdminBotManager {
         if (f === 'v2ray') return 'V2Ray';
         if (f === 'openvpn') return 'OpenVPN';
         return f;
+    }
+
+    private generatedStockUsername(baseSlug: string, index: number): string {
+        const stamp = Date.now().toString(36);
+        return `${baseSlug || 'stock'}-${stamp}-${index}`;
+    }
+
+    private async resolvePendingStockType(ctx: AdminBotContext) {
+        const ptId = await this.settingsService.getPendingStockProductType(ctx.from!.id);
+        if (!ptId) {
+            await ctx.reply(
+                'ابتدا نوع را مشخص کنید:\n' +
+                    '• <b>/types</b> یا دکمه‌های شیشه‌ای\n' +
+                    '• یا اینلاین: <code>@…</code> + جستجو و انتخاب نوع\n\n' +
+                    'بعد بلاک User/Pass یا فایل CSV/TXT را بفرستید.',
+                { parse_mode: PARSE_HTML }
+            );
+            return null;
+        }
+
+        const pt = await this.productTypeService.getById(ptId);
+        if (!pt || !pt.is_active) {
+            await this.settingsService.setPendingStockProductType(ctx.from!.id, null);
+            await ctx.reply('نوع انتخاب‌شده دیگر معتبر نیست. دوباره /types را بزنید.', {
+                parse_mode: PARSE_HTML,
+            });
+            return null;
+        }
+        return pt;
+    }
+
+    private async ingestBulkRows(
+        ctx: AdminBotContext,
+        rows: ReturnType<typeof parseBulkStockRows>,
+        sourceLabel: string
+    ): Promise<void> {
+        const pt = await this.resolvePendingStockType(ctx);
+        if (!pt) return;
+
+        let inserted = 0;
+        const failed: string[] = [];
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i]!;
+            const configText = row.configText?.trim() || null;
+            const derivedFormat = row.configFormat ?? inferConfigFormat(configText);
+            const fallbackFormat = pt.delivery_config_format === 'v2ray' ? 'v2ray' : 'openvpn';
+            const format = derivedFormat ?? fallbackFormat;
+            const username =
+                row.username?.trim() ||
+                this.generatedStockUsername(pt.slug || 'stock', i + 1);
+            const password = row.password?.trim() || 'AUTO';
+
+            try {
+                await this.inventoryService.addRow({
+                    username,
+                    password,
+                    product_type_id: pt.id,
+                    plan_key: pt.slug,
+                    config_format: format,
+                    config_text: configText,
+                });
+                inserted++;
+            } catch (e) {
+                failed.push(`#${i + 1}: ${e instanceof Error ? e.message : String(e)}`);
+            }
+        }
+
+        await ctx.reply(
+            `✅ ثبت گروهی انجام شد (${escapeHtml(sourceLabel)})\n` +
+                `• موفق: <b>${inserted}</b>\n` +
+                `• ناموفق: <b>${failed.length}</b>` +
+                (failed.length
+                    ? `\n\nجزئیات خطا:\n<code>${escapeHtml(failed.slice(0, 5).join('\n'))}</code>`
+                    : ''),
+            { parse_mode: PARSE_HTML }
+        );
+        await this.settingsService.setPendingStockProductType(ctx.from!.id, null);
+    }
+
+    private async fetchDocumentText(fileId: string): Promise<string> {
+        const file = await this.bot.api.getFile(fileId);
+        if (!file.file_path) {
+            throw new Error('فایل تلگرام path ندارد.');
+        }
+        const token = this.env.ADMIN_BOT_TOKEN;
+        if (!token) {
+            throw new Error('ADMIN_BOT_TOKEN تنظیم نشده است.');
+        }
+        const url = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error(`دانلود فایل ناموفق بود (${response.status})`);
+        }
+        const bytes = await response.arrayBuffer();
+        return new TextDecoder('utf-8').decode(bytes);
     }
 
     private async labelForInventoryRow(
@@ -300,7 +399,16 @@ export class AdminBotManager {
             if (raw.startsWith('/')) return;
 
             const parsed = parseUserPassBlock(raw);
-            if (!parsed) return;
+            if (!parsed) {
+                const looksLikeBulk =
+                    /[,;\t|]/.test(raw) ||
+                    /\b(vmess|vless|trojan|ss|ssr|hysteria|hy2|tuic):\/\//i.test(raw);
+                if (!looksLikeBulk) return;
+                const rows = parseBulkStockRows(raw);
+                if (!rows.length) return;
+                await this.ingestBulkRows(ctx, rows, 'paste');
+                return;
+            }
 
             const ptId = await this.settingsService.getPendingStockProductType(ctx.from!.id);
             if (!ptId) {
@@ -350,6 +458,53 @@ export class AdminBotManager {
             }
 
             await this.settingsService.setPendingStockProductType(ctx.from!.id, null);
+        });
+
+        this.bot.on('message:document', async (ctx) => {
+            if (!canUseStockPaste(ctx, this.env)) return;
+            const doc = ctx.message.document;
+            const fileName = doc.file_name ?? '';
+            const lowerName = fileName.toLowerCase();
+            const mime = (doc.mime_type ?? '').toLowerCase();
+            const isCsvLike =
+                lowerName.endsWith('.csv') ||
+                lowerName.endsWith('.txt') ||
+                mime === 'text/plain' ||
+                mime === 'text/csv' ||
+                mime === 'application/csv' ||
+                mime === 'application/vnd.ms-excel';
+            const isXlsx =
+                lowerName.endsWith('.xlsx') ||
+                mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+            if (isXlsx) {
+                await ctx.reply(
+                    'فایل Excel مستقیم پشتیبانی نمی‌شود. لطفاً خروجی را به CSV تبدیل کنید و دوباره بفرستید.',
+                    { parse_mode: PARSE_HTML }
+                );
+                return;
+            }
+            if (!isCsvLike) return;
+
+            let content: string;
+            try {
+                content = await this.fetchDocumentText(doc.file_id);
+            } catch (e) {
+                await ctx.reply(
+                    `خطای خواندن فایل: ${escapeHtml(e instanceof Error ? e.message : String(e))}`,
+                    { parse_mode: PARSE_HTML }
+                );
+                return;
+            }
+            const rows = parseBulkStockRows(content);
+            if (!rows.length) {
+                await ctx.reply(
+                    'هیچ ردیف معتبری از فایل استخراج نشد. فرمت را بررسی کنید (CSV/TXT با ستون‌های user/pass/config یا لینک‌های v2ray).',
+                    { parse_mode: PARSE_HTML }
+                );
+                return;
+            }
+            await this.ingestBulkRows(ctx, rows, fileName || 'document');
         });
 
         this.registerInlineHandlers();

@@ -1053,7 +1053,8 @@ export class BotManager {
                     `🔔 <b>رسید پرداخت</b>\n\n` +
                     `👤 ${escapeHtml(ctx.from.first_name || "")}\n` +
                     `💰 ${escapeHtml(pending.amount.toLocaleString())} تومان\n` +
-                    `🧾 <code>${escapeHtml(pending.transaction_id)}</code> · payment #${pending.id}`;
+                    `🧾 <code>${escapeHtml(pending.transaction_id)}</code> · payment #${pending.id}\n` +
+                    `📎 File ID: <code>${escapeHtml(fileId)}</code>`;
 
                 const keyboard = {
                     inline_keyboard: [
