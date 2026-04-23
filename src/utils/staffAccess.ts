@@ -45,6 +45,20 @@ function staffLikeChannelIds(env: Env): string[] {
 }
 
 /**
+ * Supergroup/channel chats tied to STAFF_CHANNEL_ID, STOCK_CHANNEL_ID, or CHANNEL_ID (CRM).
+ * Used for tools that should run in the support/CRM channel even when stock paste is limited
+ * to stock+staff ingest chats only.
+ */
+export function isStaffWorkspaceChannelChat(ctx: Context, env: Env): boolean {
+    if (ctx.chat?.type === 'private') return false;
+    const chatId = ctx.chat?.id;
+    for (const raw of staffLikeChannelIds(env)) {
+        if (chatMatchesConfiguredChannel(chatId, raw)) return true;
+    }
+    return false;
+}
+
+/**
  * Staff may:
  * - be ADMIN_USER_ID
  * - appear in STAFF_USER_IDS

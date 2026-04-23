@@ -14,6 +14,7 @@ import {
     canActAsStaff,
     canUseStockPaste,
     isStaffUserId,
+    isStaffWorkspaceChannelChat,
     resolveTelegramChannelChatId,
 } from '../utils/staffAccess';
 import { escapeHtml, PARSE_HTML } from '../utils/telegramHtml';
@@ -461,7 +462,8 @@ export class AdminBotManager {
         });
 
         this.bot.on('message:document', async (ctx) => {
-            if (!canUseStockPaste(ctx, this.env)) return;
+            if (!canActAsStaff(ctx, this.env)) return;
+
             const doc = ctx.message.document;
             const fileName = doc.file_name ?? '';
             const lowerName = fileName.toLowerCase();
@@ -477,34 +479,60 @@ export class AdminBotManager {
                 lowerName.endsWith('.xlsx') ||
                 mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-            if (isXlsx) {
+            const paste = canUseStockPaste(ctx, this.env);
+            const workspace = isStaffWorkspaceChannelChat(ctx, this.env);
+
+            if (isXlsx && (paste || workspace)) {
                 await ctx.reply(
                     'فایل Excel مستقیم پشتیبانی نمی‌شود. لطفاً خروجی را به CSV تبدیل کنید و دوباره بفرستید.',
                     { parse_mode: PARSE_HTML }
                 );
                 return;
             }
-            if (!isCsvLike) return;
 
-            let content: string;
-            try {
-                content = await this.fetchDocumentText(doc.file_id);
-            } catch (e) {
-                await ctx.reply(
-                    `خطای خواندن فایل: ${escapeHtml(e instanceof Error ? e.message : String(e))}`,
-                    { parse_mode: PARSE_HTML }
-                );
+            if (paste && isCsvLike) {
+                let content: string;
+                try {
+                    content = await this.fetchDocumentText(doc.file_id);
+                } catch (e) {
+                    await ctx.reply(
+                        `خطای خواندن فایل: ${escapeHtml(e instanceof Error ? e.message : String(e))}`,
+                        { parse_mode: PARSE_HTML }
+                    );
+                    return;
+                }
+                const rows = parseBulkStockRows(content);
+                if (!rows.length) {
+                    await ctx.reply(
+                        'هیچ ردیف معتبری از فایل استخراج نشد. فرمت را بررسی کنید (CSV/TXT با ستون‌های user/pass/config یا لینک‌های v2ray).',
+                        { parse_mode: PARSE_HTML }
+                    );
+                    return;
+                }
+                await this.ingestBulkRows(ctx, rows, fileName || 'document');
                 return;
             }
-            const rows = parseBulkStockRows(content);
-            if (!rows.length) {
+
+            if (paste || workspace) {
                 await ctx.reply(
-                    'هیچ ردیف معتبری از فایل استخراج نشد. فرمت را بررسی کنید (CSV/TXT با ستون‌های user/pass/config یا لینک‌های v2ray).',
+                    `📎 <b>file_id</b> (document)\n<code>${escapeHtml(doc.file_id)}</code>`,
                     { parse_mode: PARSE_HTML }
                 );
-                return;
             }
-            await this.ingestBulkRows(ctx, rows, fileName || 'document');
+        });
+
+        this.bot.on('message:photo', async (ctx) => {
+            if (!canActAsStaff(ctx, this.env)) return;
+            const paste = canUseStockPaste(ctx, this.env);
+            const workspace = isStaffWorkspaceChannelChat(ctx, this.env);
+            if (!paste && !workspace) return;
+
+            const photos = ctx.message.photo;
+            if (!photos?.length) return;
+            const fileId = photos[photos.length - 1]!.file_id;
+            await ctx.reply(`📎 <b>file_id</b> (photo)\n<code>${escapeHtml(fileId)}</code>`, {
+                parse_mode: PARSE_HTML,
+            });
         });
 
         this.registerInlineHandlers();
