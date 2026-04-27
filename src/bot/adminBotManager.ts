@@ -12,6 +12,10 @@ import { deliverInventoryForCompletedPayment } from '../services/fulfillmentServ
 import { CatalogService } from '../services/catalogService';
 import { claimChannelAlbumReply } from '../utils/channelAlbumDedupe';
 import {
+    claimChannelPostMessageFileIdSlot,
+    isCrmReceiptLikeChannelPost,
+} from '../utils/channelPostFileIdGates';
+import {
     canActAsStaff,
     canUseStockPaste,
     isStaffUserId,
@@ -538,7 +542,10 @@ export class AdminBotManager {
             if (!workspace) return;
 
             const post = ctx.channelPost;
+            if (ctx.from?.is_bot) return;
+            if (isCrmReceiptLikeChannelPost(post)) return;
             if (!(await claimChannelAlbumReply(ctx.chat?.id, post?.media_group_id))) return;
+            if (!(await claimChannelPostMessageFileIdSlot(ctx.chat?.id, post?.message_id))) return;
 
             const doc = post?.document;
             if (!doc) return;
@@ -562,7 +569,10 @@ export class AdminBotManager {
             if (!canActAsStaff(ctx, this.env)) return;
             if (!isStaffWorkspaceChannelChat(ctx, this.env)) return;
             const post = ctx.channelPost;
+            if (ctx.from?.is_bot) return;
+            if (isCrmReceiptLikeChannelPost(post)) return;
             if (!(await claimChannelAlbumReply(ctx.chat?.id, post?.media_group_id))) return;
+            if (!(await claimChannelPostMessageFileIdSlot(ctx.chat?.id, post?.message_id))) return;
             const photos = post?.photo;
             if (!photos?.length) return;
             const fileId = photos[photos.length - 1]!.file_id;

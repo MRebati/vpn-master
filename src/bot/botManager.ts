@@ -15,6 +15,10 @@ import { CatalogService } from "../services/catalogService";
 import { CheckoutService } from "../services/checkoutService";
 import { PaymentRailFactory } from "../services/paymentRails";
 import { claimChannelAlbumReply } from "../utils/channelAlbumDedupe";
+import {
+    claimChannelPostMessageFileIdSlot,
+    isCrmReceiptLikeChannelPost,
+} from "../utils/channelPostFileIdGates";
 import { escapeHtml, PARSE_HTML } from "../utils/telegramHtml";
 
 // Bot context type with environment
@@ -1006,16 +1010,20 @@ export class BotManager {
 
     private registerMediaHandlers() {
         const replyChannelFileId = async (ctx: BotContext, fileId: string) => {
-            if (!canActAsStaff(ctx, this.env)) return;
-            if (!isStaffWorkspaceChannelChat(ctx, this.env)) return;
             await ctx.reply(`<code>${escapeHtml(fileId)}</code>`, {
                 parse_mode: PARSE_HTML,
             });
         };
 
         this.bot.on("channel_post:document", async (ctx) => {
+            if (!canActAsStaff(ctx, this.env)) return;
+            if (!isStaffWorkspaceChannelChat(ctx, this.env)) return;
+
             const post = ctx.channelPost;
+            if (ctx.from?.is_bot) return;
+            if (isCrmReceiptLikeChannelPost(post)) return;
             if (!(await claimChannelAlbumReply(ctx.chat?.id, post?.media_group_id))) return;
+            if (!(await claimChannelPostMessageFileIdSlot(ctx.chat?.id, post?.message_id))) return;
 
             const doc = post?.document;
             if (!doc) return;
@@ -1040,8 +1048,14 @@ export class BotManager {
         });
 
         this.bot.on("channel_post:photo", async (ctx) => {
+            if (!canActAsStaff(ctx, this.env)) return;
+            if (!isStaffWorkspaceChannelChat(ctx, this.env)) return;
+
             const post = ctx.channelPost;
+            if (ctx.from?.is_bot) return;
+            if (isCrmReceiptLikeChannelPost(post)) return;
             if (!(await claimChannelAlbumReply(ctx.chat?.id, post?.media_group_id))) return;
+            if (!(await claimChannelPostMessageFileIdSlot(ctx.chat?.id, post?.message_id))) return;
 
             const photos = post?.photo;
             if (!photos?.length) return;
