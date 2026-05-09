@@ -90,7 +90,9 @@ vi.mock('../../services/settingsService', () => ({
 }));
 
 vi.mock('../../services/inventoryService', () => ({
-    InventoryService: vi.fn().mockImplementation(() => ({})),
+    InventoryService: vi.fn().mockImplementation(() => ({
+        hasAvailableForPlan: vi.fn().mockResolvedValue(true),
+    })),
 }));
 
 vi.mock('../../services/vpnAccountService', () => ({

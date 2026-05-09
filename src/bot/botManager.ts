@@ -279,6 +279,31 @@ export class BotManager {
         ).trim();
     }
 
+    /** Telegram inline button text is limited to 64 characters. */
+    private inlinePlanButtonLabel(plan: PublicPlan): string {
+        const rating =
+            plan.rating !== null && plan.rating !== undefined
+                ? ` ⭐${plan.rating.toFixed(1)}`
+                : "";
+        const rest = `${rating} — ${plan.priceToman.toLocaleString()}`;
+        const max = 64;
+        let titlePart = plan.title;
+        if (titlePart.length + rest.length > max) {
+            const budget = Math.max(1, max - rest.length - 1);
+            titlePart =
+                plan.title.length > budget ? `${plan.title.slice(0, budget - 1)}…` : plan.title;
+        }
+        return `${titlePart}${rest}`;
+    }
+
+    private async planHasAvailableStock(plan: PublicPlan): Promise<boolean> {
+        return this.inventoryService.hasAvailableForPlan({
+            planKey: plan.internalPlanKey,
+            productTypeId: plan.productTypeId ?? null,
+            supplierId: plan.supplierId ?? null,
+        });
+    }
+
     private async showPlanSelection(ctx: BotContext): Promise<void> {
         const plans = (await this.checkoutService.listPlans()).filter(
             (p) => p.isCatalogVisible
@@ -288,26 +313,51 @@ export class BotManager {
             return;
         }
 
+        const stockFlags = await Promise.all(
+            plans.map((p) => this.planHasAvailableStock(p))
+        );
+        const purchasable = plans.filter((_, i) => stockFlags[i]);
+
+        if (!purchasable.length) {
+            const lines = plans.map(
+                (p, idx) =>
+                    `${idx + 1}. ${p.title} — ${p.priceToman.toLocaleString()} تومان (ناموجود)${
+                        p.rating !== null && p.rating !== undefined
+                            ? ` (⭐️ ${p.rating.toFixed(1)})`
+                            : ""
+                    }`
+            );
+            await ctx.reply(
+                "📱 پلن‌ها:\n\n" +
+                    lines.join("\n") +
+                    "\n\nدر حال حاضر برای هیچ‌کدام موجودی فعال نداریم. لطفاً بعداً دوباره سر بزنید یا با پشتیبانی تماس بگیرید."
+            );
+            return;
+        }
+
         const keyboard = new InlineKeyboard();
-        plans.forEach((plan, index) => {
-            const rating =
-                plan.rating !== null && plan.rating !== undefined
-                    ? ` ⭐️${plan.rating.toFixed(1)}`
-                    : "";
-            keyboard.text(`${plan.title}${rating}`, `plan:${encodeURIComponent(plan.slug)}`);
-            if (index < plans.length - 1) keyboard.row();
+        purchasable.forEach((plan, index) => {
+            keyboard.text(
+                this.inlinePlanButtonLabel(plan),
+                `plan:${encodeURIComponent(plan.slug)}`
+            );
+            if (index < purchasable.length - 1) keyboard.row();
         });
 
-        const lines = plans.map(
-            (p, idx) =>
-                `${idx + 1}. ${p.title} — ${p.priceToman.toLocaleString()} تومان${
-                    p.rating !== null && p.rating !== undefined
-                        ? ` (⭐️ ${p.rating.toFixed(1)})`
-                        : ""
-                }`
-        );
+        const lines = plans.map((p, idx) => {
+            const oos = !stockFlags[idx];
+            const rating =
+                p.rating !== null && p.rating !== undefined
+                    ? ` (⭐️ ${p.rating.toFixed(1)})`
+                    : "";
+            return `${idx + 1}. ${p.title} — ${p.priceToman.toLocaleString()} تومان${
+                oos ? " (ناموجود)" : ""
+            }${rating}`;
+        });
         await ctx.reply(
-            "📱 پلن‌های فعال:\n\n" + lines.join("\n") + "\n\nیک پلن را انتخاب کنید:",
+            "📱 پلن‌های فعال (قیمت به تومان):\n\n" +
+                lines.join("\n") +
+                "\n\nفقط پلن‌های دارای موجودی قابل انتخاب هستند:",
             { reply_markup: keyboard }
         );
     }
@@ -399,6 +449,13 @@ export class BotManager {
         const plan = await this.checkoutService.getPlanBySlug(slug);
         if (!plan || !plan.isCatalogVisible) {
             await ctx.reply("این پلن در حال حاضر قابل خرید نیست. لطفاً از پلن‌های فعال انتخاب کنید.");
+            return;
+        }
+
+        if (!(await this.planHasAvailableStock(plan))) {
+            await ctx.reply(
+                "برای این محصول در حال حاضر موجودی نداریم (ناموجود). لطفاً پلن دیگری انتخاب کنید یا بعداً دوباره تلاش کنید."
+            );
             return;
         }
 
@@ -916,6 +973,14 @@ export class BotManager {
                 return;
             }
 
+            if (!(await this.planHasAvailableStock(session.plan))) {
+                this.paymentMethodContextByTelegramId.delete(ctx.from.id);
+                await ctx.reply(
+                    "متأسفانه همزمان با انتخاب شما، موجودی این محصول تمام شد (ناموجود). پرداختی ثبت نشد — لطفاً دوباره از منوی خرید پلن را انتخاب کنید."
+                );
+                return;
+            }
+
             const user = await this.userService.getOrCreateUser(
                 ctx.from.id,
                 ctx.from.first_name,
@@ -1303,6 +1368,14 @@ export class BotManager {
                     const session = this.paymentMethodContextByTelegramId.get(ctx.from.id);
                     if (!session || Date.now() - session.createdAt > 20 * 60_000) {
                         await ctx.reply("برای ادامه خرید دوباره یک پلن انتخاب کنید.");
+                        await this.showPlanSelection(ctx);
+                        return;
+                    }
+                    if (!(await this.planHasAvailableStock(session.plan))) {
+                        this.paymentMethodContextByTelegramId.delete(ctx.from.id);
+                        await ctx.reply(
+                            "موجودی این محصول تمام شده (ناموجود). لطفاً دوباره از منوی خرید پلن دیگری را انتخاب کنید."
+                        );
                         await this.showPlanSelection(ctx);
                         return;
                     }

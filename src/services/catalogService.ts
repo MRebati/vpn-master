@@ -292,6 +292,7 @@ export class CatalogService {
             asNumber(row.product_type_id) ??
             asNumber(row.productTypeId) ??
             id;
+        const supplierId = asNumber(row.supplier_id) ?? asNumber(row.supplierId) ?? null;
 
         return {
             id,
@@ -305,6 +306,7 @@ export class CatalogService {
             isCatalogVisible,
             internalPlanKey,
             productTypeId,
+            supplierId,
         };
     }
 
@@ -319,6 +321,7 @@ export class CatalogService {
         const metricValue = asNumber(row.metric_value) ?? 0;
         const priceToman = asNumber(row.price_toman) ?? 0;
         const isCatalogVisible = asBoolean(row.is_active) ?? true;
+        const supplierId = asNumber(row.supplier_id) ?? null;
 
         return {
             id,
@@ -332,6 +335,7 @@ export class CatalogService {
             isCatalogVisible,
             internalPlanKey: slug,
             productTypeId: id,
+            supplierId,
         };
     }
 

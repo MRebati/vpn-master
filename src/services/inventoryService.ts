@@ -94,6 +94,69 @@ export class InventoryService {
         return data;
     }
 
+    /**
+     * True if {@link takeNextForPlan} would return a row (without consuming stock).
+     * Uses the same priority: product_type_id → supplier generic → legacy plan_key generic.
+     */
+    async hasAvailableForPlan(input: {
+        planKey: string;
+        productTypeId?: number | null;
+        supplierId?: number | null;
+    }): Promise<boolean> {
+        const plan = input.planKey;
+        const productTypeId = input.productTypeId ?? null;
+        if (productTypeId) {
+            const { data, error } = await this.supabase
+                .from('account_inventory')
+                .select('id')
+                .eq('status', 'available')
+                .eq('product_type_id', productTypeId)
+                .order('id', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+            if (error) {
+                console.error('[INVENTORY] hasAvailableForPlan product_type_id:', error);
+                throw new Error(error.message);
+            }
+            if (data) return true;
+        }
+
+        const supplierId = input.supplierId ?? null;
+        if (supplierId) {
+            const { data, error } = await this.supabase
+                .from('account_inventory')
+                .select('id')
+                .eq('status', 'available')
+                .eq('supplier_id' as never, supplierId as never)
+                .is('product_type_id', null)
+                .or(`plan_key.is.null,plan_key.eq.${plan}`)
+                .order('id', { ascending: true })
+                .limit(1)
+                .maybeSingle();
+            if (error) {
+                console.warn('[INVENTORY] hasAvailableForPlan supplier fallback skipped:', error.message);
+            } else if (data) {
+                return true;
+            }
+        }
+
+        const { data, error } = await this.supabase
+            .from('account_inventory')
+            .select('id')
+            .eq('status', 'available')
+            .is('product_type_id', null)
+            .or(`plan_key.is.null,plan_key.eq.${plan}`)
+            .order('id', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+        if (error) {
+            console.error('[INVENTORY] hasAvailableForPlan legacy:', error);
+            throw new Error(error.message);
+        }
+        return Boolean(data);
+    }
+
     async markSold(
         inventoryId: number,
         userId: number,
