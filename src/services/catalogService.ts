@@ -121,7 +121,8 @@ export class CatalogService {
 
             const legacyProbe = await this.supabase
                 .from('vpn_product_types' as never)
-                .select('id,is_active');
+                .select('id,is_active')
+                .is('deleted_at', null);
             if (!legacyProbe.error && Array.isArray(legacyProbe.data)) {
                 const rows = legacyProbe.data as unknown as DbRecord[];
                 const hasVisible = rows.some((row) => asBoolean(row.is_active) ?? true);
@@ -148,7 +149,8 @@ export class CatalogService {
             const legacyBaseQuery = this.supabase
                 .from('vpn_product_types' as never)
                 .select('*')
-                .eq('is_active', true);
+                .eq('is_active', true)
+                .is('deleted_at', null);
             const legacyOrderedQuery =
                 typeof (legacyBaseQuery as { order?: (...args: unknown[]) => unknown }).order ===
                 'function'
@@ -314,6 +316,7 @@ export class CatalogService {
         const id = asNumber(row.id);
         const slug = asString(row.slug);
         if (!id || !slug) return null;
+        if (row.deleted_at != null) return null;
 
         const title = asString(row.label_fa) ?? slug;
         const unitValue = asString(row.unit)?.toLowerCase();
@@ -394,6 +397,7 @@ export class CatalogService {
             .from('vpn_product_types' as never)
             .select('*')
             .eq('id', productTypeId)
+            .is('deleted_at', null)
             .maybeSingle();
         if (ptErr || !ptRowRaw) return [];
 

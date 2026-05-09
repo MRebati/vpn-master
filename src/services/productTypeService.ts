@@ -9,6 +9,7 @@ export class ProductTypeService {
             .from('vpn_product_types')
             .select('*')
             .eq('is_active', true)
+            .is('deleted_at', null)
             .order('sort_order', { ascending: true })
             .order('id', { ascending: true });
 
@@ -43,6 +44,7 @@ export class ProductTypeService {
             .select('*')
             .eq('slug', slug.trim())
             .eq('is_active', true)
+            .is('deleted_at', null)
             .maybeSingle();
         if (error) throw new Error(error.message);
         return data;
@@ -53,6 +55,7 @@ export class ProductTypeService {
             .from('vpn_product_types')
             .select('*')
             .eq('slug', slug.trim())
+            .is('deleted_at', null)
             .maybeSingle();
         if (error) throw new Error(error.message);
         return data;

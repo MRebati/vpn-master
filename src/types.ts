@@ -39,6 +39,8 @@ export interface VpnProductType {
     price_toman: number | null;
     sort_order: number;
     is_active: boolean;
+    /** When set, row is archived (hidden from catalog); slug may be reused on a newer row. */
+    deleted_at?: string | null;
     supplier_id?: number | null;
     guideline_text?: string | null;
     connection_url_template?: string | null;
