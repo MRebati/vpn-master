@@ -24,10 +24,6 @@ function hasInventoryCredentials(inv: AccountInventory): boolean {
     return Boolean(inv.username?.trim() && inv.password?.trim());
 }
 
-const CONNECTION_HELP_KEYBOARD = {
-    inline_keyboard: [[{ text: '📘 راهنمای اتصال', callback_data: 'connection-help' }]],
-} as const;
-
 function normalizeConnectionExt(format: string | null | undefined): string {
     if (format === 'v2ray') return 'json';
     if (format === 'openvpn') return 'ovpn';
@@ -40,38 +36,40 @@ function isSingleUrlPayload(text: string): boolean {
     return /^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(trimmed);
 }
 
+/** First line or whole block that is a single subscription/config URL (handles trailing newlines / notes). */
+function extractPrimarySubscriptionUrl(raw: string | null | undefined): string | null {
+    if (!raw) return null;
+    const s = raw.replace(/\uFEFF/g, '').trim();
+    if (isSingleUrlPayload(s)) return s.trim();
+    for (const line of s.split(/\r?\n/)) {
+        const t = line.trim();
+        if (t && isSingleUrlPayload(t)) return t;
+    }
+    return null;
+}
+
 function resolveConnectionPayload(
     inv: AccountInventory,
     productType: { delivery_config_text?: string | null; delivery_config_format?: string | null } | null
 ): { text: string; ext: string; isUrl: boolean } | null {
-    const text =
+    const raw =
         inv.config_text?.trim() ||
         (productType?.delivery_config_text ? productType.delivery_config_text.trim() : '');
-    if (!text) return null;
-    const isUrl = isSingleUrlPayload(text);
+    if (!raw) return null;
     const ext = normalizeConnectionExt(inv.config_format || productType?.delivery_config_format || null);
-    return { text, ext, isUrl };
-}
-
-function connectionHelpText(
-    productType: {
-        guideline_text?: string | null;
-        connection_url_template?: string | null;
-    } | null
-): string {
-    const guideline = productType?.guideline_text?.trim();
-    const connectionUrl = productType?.connection_url_template?.trim();
-    if (guideline && connectionUrl) {
-        return `ℹ️ راهنمای اتصال:\n${guideline}\n\n🔗 لینک راهنما:\n${connectionUrl}`;
+    const url = extractPrimarySubscriptionUrl(raw);
+    if (url) {
+        return { text: url, ext, isUrl: true };
     }
-    if (guideline) return `ℹ️ راهنمای اتصال:\n${guideline}`;
-    if (connectionUrl) return `ℹ️ راهنمای اتصال:\n🔗 ${connectionUrl}`;
-    return 'ℹ️ راهنمای اتصال: کانفیگ را در اپلیکیشن OpenVPN یا V2Ray وارد کنید. در صورت مشکل با پشتیبانی تماس بگیرید.';
+    const isUrl = isSingleUrlPayload(raw);
+    return { text: raw, ext, isUrl };
 }
 
-function credentialessMergedCaptionHtml(productType: Parameters<typeof connectionHelpText>[0]): string {
-    const helpPlain = connectionHelpText(productType);
-    return `${EXTENDED_MESSAGES.VPN_ACCOUNT_SUCCESS_BANNER_HTML}\n\n${escapeHtml(helpPlain)}`;
+function credentialessFileCaptionHtml(): string {
+    return (
+        `${EXTENDED_MESSAGES.VPN_ACCOUNT_SUCCESS_BANNER_HTML}\n\n` +
+        '📎 <i>فایل کانفیگ اتصال پیوست است.</i>'
+    );
 }
 
 async function sendConnectionPackage(params: {
@@ -79,33 +77,26 @@ async function sendConnectionPackage(params: {
     telegramId: number;
     inv: AccountInventory;
     productTypeService: ProductTypeService;
-    /** When true: no separate help message; prepend success banner to file caption (credentialess non-URL). */
+    /** When true: success banner in file caption (credentialess non-URL). */
     credentialessMergeHelp?: boolean;
 }): Promise<void> {
     const { bot, telegramId, inv, productTypeService, credentialessMergeHelp } = params;
     const productType = inv.product_type_id
         ? await productTypeService.getById(inv.product_type_id)
         : null;
-    const keyboard = CONNECTION_HELP_KEYBOARD;
 
     const captionHtml = credentialessMergeHelp
-        ? credentialessMergedCaptionHtml(productType).slice(0, 1024)
+        ? credentialessFileCaptionHtml().slice(0, 1024)
         : 'فایل اتصال';
 
-    // 1) Prefer existing Telegram file id if available.
     if (inv.config_file_id) {
         await bot.api.sendDocument(telegramId, inv.config_file_id, {
             caption: captionHtml,
             parse_mode: PARSE_HTML,
-            reply_markup: keyboard,
         });
-        if (!credentialessMergeHelp) {
-            await bot.api.sendMessage(telegramId, connectionHelpText(productType));
-        }
         return;
     }
 
-    // 2) Otherwise generate a connection file from inventory or product-type delivery template.
     const payload = resolveConnectionPayload(inv, productType);
     if (payload) {
         if (payload.isUrl) {
@@ -114,15 +105,11 @@ async function sendConnectionPackage(params: {
                     /\{LINK\}/g,
                     escapeHtml(payload.text)
                 );
-                await bot.api.sendMessage(telegramId, msg, {
-                    parse_mode: PARSE_HTML,
-                    reply_markup: keyboard,
-                });
+                await bot.api.sendMessage(telegramId, msg, { parse_mode: PARSE_HTML });
             } else {
-                await bot.api.sendMessage(telegramId, `🔗 لینک اتصال:\n${payload.text}`, {
-                    reply_markup: keyboard,
+                await bot.api.sendMessage(telegramId, `🔗 <b>لینک اتصال:</b>\n<code>${escapeHtml(payload.text)}</code>`, {
+                    parse_mode: PARSE_HTML,
                 });
-                await bot.api.sendMessage(telegramId, connectionHelpText(productType));
             }
             return;
         }
@@ -130,23 +117,13 @@ async function sendConnectionPackage(params: {
         await bot.api.sendDocument(telegramId, new InputFile(bytes, `connection-${inv.id}.${payload.ext}`), {
             caption: captionHtml,
             parse_mode: PARSE_HTML,
-            reply_markup: keyboard,
         });
-        if (!credentialessMergeHelp) {
-            await bot.api.sendMessage(telegramId, connectionHelpText(productType));
-        }
         return;
     }
 
     if (credentialessMergeHelp) {
-        await bot.api.sendMessage(telegramId, credentialessMergedCaptionHtml(productType), {
-            parse_mode: PARSE_HTML,
-            reply_markup: keyboard,
-        });
-        return;
+        await bot.api.sendMessage(telegramId, credentialessFileCaptionHtml(), { parse_mode: PARSE_HTML });
     }
-
-    await bot.api.sendMessage(telegramId, connectionHelpText(productType));
 }
 
 async function sendVpnFulfillmentToUser(params: {
@@ -172,12 +149,10 @@ async function sendVpnFulfillmentToUser(params: {
         return;
     }
 
-    if (!hasInventoryCredentials(inv) && payload?.isUrl) {
+    // Subscription URL (even with internal placeholder user/pass in DB).
+    if (payload?.isUrl) {
         const msg = EXTENDED_MESSAGES.ACCOUNT_CREATED_LINK_ONLY.replace(/\{LINK\}/g, escapeHtml(payload.text));
-        await bot.api.sendMessage(telegramId, msg, {
-            parse_mode: PARSE_HTML,
-            reply_markup: CONNECTION_HELP_KEYBOARD,
-        });
+        await bot.api.sendMessage(telegramId, msg, { parse_mode: PARSE_HTML });
         return;
     }
 

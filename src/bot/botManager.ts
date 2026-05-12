@@ -1042,6 +1042,11 @@ export class BotManager {
             if (!result.ok) {
                 await ctx.reply(`خطا: ${result.error ?? "نامشخص"}`);
             } else {
+                try {
+                    await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
+                } catch (e) {
+                    console.error("[PAYMENT_APPROVE] clear inline keyboard:", e);
+                }
                 await ctx.reply("تایید شد و اکانت برای کاربر ارسال شد.");
             }
         });
@@ -1055,19 +1060,10 @@ export class BotManager {
             const paymentId = parseInt(ctx.match![1], 10);
             await this.paymentService.updatePaymentStatus(paymentId, "FAILED");
             await this.paymentService.setReviewStatus(paymentId, "rejected");
-            const p = await this.paymentService.getPaymentById(paymentId);
-            if (p) {
-                const u = await this.userService.getUserById(p.user_id);
-                if (u) {
-                    try {
-                        await this.bot.api.sendMessage(
-                            u.telegram_id,
-                            "پرداخت شما توسط پشتیبان رد شد. در صورت نیاز تماس بگیرید."
-                        );
-                    } catch (e) {
-                        console.error("[REJECT_NOTIFY_USER]", e);
-                    }
-                }
+            try {
+                await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: [] } });
+            } catch (e) {
+                console.error("[PAYMENT_REJECT] clear inline keyboard:", e);
             }
             await ctx.reply("پرداخت رد شد.");
         });

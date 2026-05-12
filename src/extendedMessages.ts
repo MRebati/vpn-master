@@ -17,7 +17,7 @@ export const EXTENDED_MESSAGES = {
         '📆 تاریخ انقضا: <b>{EXPIRY_DATE}</b>\n\n' +
         '⚠️ <i>این یک اکانت تست است و کار نخواهد کرد. در حالت عادی، پس از تایید پرداخت، اکانت واقعی برای شما ایجاد خواهد شد.</i>',
 
-    /** Single DM for inventory rows without username/password when connection is a subscription URL. */
+    /** Single DM when delivery is a subscription URL (no separate user/pass or help messages). */
     ACCOUNT_CREATED_LINK_ONLY:
         '✅ <b>اکانت VPN شما با موفقیت ایجاد شد!</b> 🎉\n\n' +
         '🔗 <b>لینک اتصال:</b>\n' +
