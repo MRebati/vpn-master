@@ -20,6 +20,14 @@ function accountCaption(username: string, password: string, expiryFa: string): s
         .replace(/\{EXPIRY_DATE\}/g, escapeHtml(expiryFa));
 }
 
+function hasInventoryCredentials(inv: AccountInventory): boolean {
+    return Boolean(inv.username?.trim() && inv.password?.trim());
+}
+
+const CONNECTION_HELP_KEYBOARD = {
+    inline_keyboard: [[{ text: '📘 راهنمای اتصال', callback_data: 'connection-help' }]],
+} as const;
+
 function normalizeConnectionExt(format: string | null | undefined): string {
     if (format === 'v2ray') return 'json';
     if (format === 'openvpn') return 'ovpn';
@@ -61,46 +69,131 @@ function connectionHelpText(
     return 'ℹ️ راهنمای اتصال: کانفیگ را در اپلیکیشن OpenVPN یا V2Ray وارد کنید. در صورت مشکل با پشتیبانی تماس بگیرید.';
 }
 
+function credentialessMergedCaptionHtml(productType: Parameters<typeof connectionHelpText>[0]): string {
+    const helpPlain = connectionHelpText(productType);
+    return `${EXTENDED_MESSAGES.VPN_ACCOUNT_SUCCESS_BANNER_HTML}\n\n${escapeHtml(helpPlain)}`;
+}
+
 async function sendConnectionPackage(params: {
     bot: Bot;
     telegramId: number;
     inv: AccountInventory;
     productTypeService: ProductTypeService;
+    /** When true: no separate help message; prepend success banner to file caption (credentialess non-URL). */
+    credentialessMergeHelp?: boolean;
 }): Promise<void> {
-    const { bot, telegramId, inv, productTypeService } = params;
+    const { bot, telegramId, inv, productTypeService, credentialessMergeHelp } = params;
     const productType = inv.product_type_id
         ? await productTypeService.getById(inv.product_type_id)
         : null;
-    const keyboard = {
-        inline_keyboard: [[{ text: '📘 راهنمای اتصال', callback_data: 'connection-help' }]],
-    };
+    const keyboard = CONNECTION_HELP_KEYBOARD;
+
+    const captionHtml = credentialessMergeHelp
+        ? credentialessMergedCaptionHtml(productType).slice(0, 1024)
+        : 'فایل اتصال';
 
     // 1) Prefer existing Telegram file id if available.
     if (inv.config_file_id) {
         await bot.api.sendDocument(telegramId, inv.config_file_id, {
-            caption: 'فایل اتصال',
+            caption: captionHtml,
+            parse_mode: PARSE_HTML,
             reply_markup: keyboard,
         });
-    } else {
-        // 2) Otherwise generate a connection file from inventory or product-type delivery template.
-        const payload = resolveConnectionPayload(inv, productType);
-        if (payload) {
-            if (payload.isUrl) {
-                await bot.api.sendMessage(telegramId, `🔗 لینک اتصال:\n${payload.text}`, {
+        if (!credentialessMergeHelp) {
+            await bot.api.sendMessage(telegramId, connectionHelpText(productType));
+        }
+        return;
+    }
+
+    // 2) Otherwise generate a connection file from inventory or product-type delivery template.
+    const payload = resolveConnectionPayload(inv, productType);
+    if (payload) {
+        if (payload.isUrl) {
+            if (credentialessMergeHelp) {
+                const msg = EXTENDED_MESSAGES.ACCOUNT_CREATED_LINK_ONLY.replace(
+                    /\{LINK\}/g,
+                    escapeHtml(payload.text)
+                );
+                await bot.api.sendMessage(telegramId, msg, {
+                    parse_mode: PARSE_HTML,
                     reply_markup: keyboard,
                 });
             } else {
-                const bytes = new TextEncoder().encode(payload.text);
-                await bot.api.sendDocument(telegramId, new InputFile(bytes, `connection-${inv.id}.${payload.ext}`), {
-                    caption: 'فایل اتصال',
+                await bot.api.sendMessage(telegramId, `🔗 لینک اتصال:\n${payload.text}`, {
                     reply_markup: keyboard,
                 });
+                await bot.api.sendMessage(telegramId, connectionHelpText(productType));
             }
+            return;
         }
+        const bytes = new TextEncoder().encode(payload.text);
+        await bot.api.sendDocument(telegramId, new InputFile(bytes, `connection-${inv.id}.${payload.ext}`), {
+            caption: captionHtml,
+            parse_mode: PARSE_HTML,
+            reply_markup: keyboard,
+        });
+        if (!credentialessMergeHelp) {
+            await bot.api.sendMessage(telegramId, connectionHelpText(productType));
+        }
+        return;
     }
 
-    // Always send connection help text so user has instructions even if only file was sent.
+    if (credentialessMergeHelp) {
+        await bot.api.sendMessage(telegramId, credentialessMergedCaptionHtml(productType), {
+            parse_mode: PARSE_HTML,
+            reply_markup: keyboard,
+        });
+        return;
+    }
+
     await bot.api.sendMessage(telegramId, connectionHelpText(productType));
+}
+
+async function sendVpnFulfillmentToUser(params: {
+    bot: Bot;
+    telegramId: number;
+    inv: AccountInventory;
+    productTypeService: ProductTypeService;
+    isTestMode: boolean;
+    expiryFa: string;
+}): Promise<void> {
+    const { bot, telegramId, inv, productTypeService, isTestMode, expiryFa } = params;
+    const productType = inv.product_type_id
+        ? await productTypeService.getById(inv.product_type_id)
+        : null;
+    const payload = resolveConnectionPayload(inv, productType);
+
+    if (isTestMode) {
+        const cap = EXTENDED_MESSAGES.TEST_MODE_ACCOUNT.replace(/\{USERNAME\}/g, escapeHtml(inv.username))
+            .replace(/\{PASSWORD\}/g, escapeHtml(inv.password))
+            .replace(/\{EXPIRY_DATE\}/g, escapeHtml(expiryFa));
+        await bot.api.sendMessage(telegramId, cap, { parse_mode: PARSE_HTML });
+        await sendConnectionPackage({ bot, telegramId, inv, productTypeService });
+        return;
+    }
+
+    if (!hasInventoryCredentials(inv) && payload?.isUrl) {
+        const msg = EXTENDED_MESSAGES.ACCOUNT_CREATED_LINK_ONLY.replace(/\{LINK\}/g, escapeHtml(payload.text));
+        await bot.api.sendMessage(telegramId, msg, {
+            parse_mode: PARSE_HTML,
+            reply_markup: CONNECTION_HELP_KEYBOARD,
+        });
+        return;
+    }
+
+    if (hasInventoryCredentials(inv)) {
+        await bot.api.sendMessage(telegramId, accountCaption(inv.username, inv.password, expiryFa), {
+            parse_mode: PARSE_HTML,
+        });
+    }
+
+    await sendConnectionPackage({
+        bot,
+        telegramId,
+        inv,
+        productTypeService,
+        credentialessMergeHelp: !hasInventoryCredentials(inv),
+    });
 }
 
 async function tryEditSoldStockMessage(params: {
@@ -227,27 +320,17 @@ export async function fulfillPaymentAfterApproval(params: {
         invId: inv.id,
     });
 
-    const cap = isTestMode
-        ? EXTENDED_MESSAGES.TEST_MODE_ACCOUNT.replace(/\{USERNAME\}/g, escapeHtml(inv.username))
-              .replace(/\{PASSWORD\}/g, escapeHtml(inv.password))
-              .replace(/\{EXPIRY_DATE\}/g, escapeHtml(expiryFa))
-        : accountCaption(inv.username, inv.password, expiryFa);
-
     try {
-        await bot.api.sendMessage(telegramId, cap, { parse_mode: PARSE_HTML });
-    } catch (e) {
-        console.error('[FULFILL] sendMessage:', e);
-    }
-
-    try {
-        await sendConnectionPackage({
+        await sendVpnFulfillmentToUser({
             bot,
             telegramId,
             inv,
             productTypeService,
+            isTestMode,
+            expiryFa,
         });
     } catch (e) {
-        console.error('[FULFILL] sendConnectionPackage:', e);
+        console.error('[FULFILL] sendVpnFulfillmentToUser:', e);
     }
 
     return { ok: true };
@@ -322,19 +405,13 @@ export async function deliverInventoryForCompletedPayment(params: {
         invId: inv.id,
     });
 
-    const cap = isTestMode
-        ? EXTENDED_MESSAGES.TEST_MODE_ACCOUNT.replace(/\{USERNAME\}/g, escapeHtml(inv.username))
-              .replace(/\{PASSWORD\}/g, escapeHtml(inv.password))
-              .replace(/\{EXPIRY_DATE\}/g, escapeHtml(expiryFa))
-        : accountCaption(inv.username, inv.password, expiryFa);
-
-    await bot.api.sendMessage(telegramId, cap, { parse_mode: PARSE_HTML });
-
-    await sendConnectionPackage({
+    await sendVpnFulfillmentToUser({
         bot,
         telegramId,
         inv,
         productTypeService,
+        isTestMode,
+        expiryFa,
     });
 
     return { ok: true };
